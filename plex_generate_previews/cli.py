@@ -19,7 +19,7 @@ from rich.text import Text
 
 from .config import Config, load_config
 from .gpu_detection import detect_all_gpus, format_gpu_info
-from .plex_client import plex_server, get_library_sections
+from .plex_client import plex_server, get_library_sections, get_recent_media_items
 from .worker import WorkerPool
 from .utils import calculate_title_width, setup_working_directory as create_working_directory, is_windows
 from .version_check import check_for_updates
@@ -418,6 +418,25 @@ def run_processing(config, selected_gpus):
         dynamic_group = DynamicGroup()
         
         with Live(dynamic_group, console=console, refresh_per_second=20):
+            # Step 0: prioritize recent items
+            dynamic_group.set_query_mode()
+            query_task = query_progress.add_task("Fetching recent items...", total=1, completed=0)
+            
+            recent_items = get_recent_media_items(plex, config, limit=30)
+            
+            if recent_items:
+                dynamic_group.set_processing_mode()
+                query_progress.remove_task(query_task)
+                
+                main_task = main_progress.add_task(f"Processing Recent Items", total=len(recent_items))
+                
+                worker_pool.process_items(recent_items, config, plex, worker_progress, main_progress, main_task, title_max_width, library_name="Recent")
+                total_processed += len(recent_items)
+                
+                main_progress.remove_task(main_task)
+            else:
+                query_progress.remove_task(query_task)
+
             # Start in query mode
             dynamic_group.set_query_mode()
             query_task = query_progress.add_task("Querying library...", total=1, completed=0)

@@ -1,0 +1,24 @@
+version: '3'
+services:
+  previews:
+    image: local/plex_preview:1
+    user: 1000:1000 # UID:GID to use when creating new files and directories. Remove to run as root.
+    group_add:
+      - 109  # Replace with GID of 'render' group (check with `getent group render`)
+    devices:
+      - /dev/dri:/dev/dri
+    environment:
+      - PLEX_URL=https://plex.sakhter.org
+      - PLEX_TOKEN=4ATxZf5GXcWqJjMnhGpt
+      - PLEX_BIF_FRAME_INTERVAL=5
+      - THUMBNAIL_QUALITY=4
+      - PLEX_LOCAL_MEDIA_PATH=/media
+      - TMP_FOLDER=/tmp/previews
+      - PLEX_TIMEOUT=60
+      - GPU_THREADS=1
+      - CPU_THREADS=0
+      - PLEX_CONFIG_FOLDER=/pms
+    volumes:
+      - /mnt:/mnt
+      - /mnt/storage-raid/plex/Library/Application Support/Plex Media Server/Media:/media
+      - /mnt/storage-raid/plex/Library/Application Support/Plex Media Server/:/pms

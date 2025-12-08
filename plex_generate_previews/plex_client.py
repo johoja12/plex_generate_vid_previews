@@ -136,6 +136,95 @@ def filter_duplicate_locations(media_items):
     return filtered_items
 
 
+def get_recent_media_items(plex, config: Config, limit: int = 30):
+    """
+    Get the most recent media items across all configured libraries.
+    
+    Args:
+        plex: Plex server instance
+        config: Configuration object
+        limit: Maximum number of recent items to return (default: 30)
+        
+    Returns:
+        list: List of tuples (key, title, media_type) sorted by added date (newest first)
+    """
+    logger.info(f"Getting top {limit} recent media items across all libraries...")
+    
+    try:
+        sections = retry_plex_call(plex.library.sections)
+    except Exception as e:
+        logger.error(f"Failed to get library sections for recent items: {e}")
+        return []
+    
+    all_recent_items = []
+    
+    for section in sections:
+        # Skip libraries not in config
+        if config.plex_libraries and section.title.lower() not in config.plex_libraries:
+            continue
+            
+        if section.METADATA_TYPE not in ['movie', 'episode']:
+            continue
+            
+        try:
+            # Fetch slightly more than limit to account for filtering
+            recent = retry_plex_call(section.recentlyAdded, maxresults=limit)
+            
+            for item in recent:
+                # Handle Episodes
+                if item.type == 'episode':
+                    # Format episode title
+                    show_title = item.grandparentTitle
+                    season_episode = item.seasonEpisode.upper()
+                    formatted_title = f"{show_title} {season_episode}"
+                    
+                    # We keep the item object temporarily for sorting
+                    all_recent_items.append({
+                        'item': item,
+                        'added_at': item.addedAt,
+                        'tuple': (item.key, item.locations, formatted_title, 'episode')
+                    })
+                
+                # Handle Movies
+                elif item.type == 'movie':
+                    all_recent_items.append({
+                        'item': item,
+                        'added_at': item.addedAt,
+                        'tuple': (item.key, [], item.title, 'movie') # Empty locations list as movies typically don't have multi-part issues handled this way or it's handled differently
+                    })
+                    
+        except Exception as e:
+            logger.warning(f"Failed to get recent items for library '{section.title}': {e}")
+            continue
+            
+    # Sort by added date (newest first)
+    all_recent_items.sort(key=lambda x: x['added_at'], reverse=True)
+    
+    # Take top 'limit' items
+    top_items = all_recent_items[:limit]
+    
+    # Extract tuples for processing
+    # Note: We need to handle duplicate filtering for episodes
+    # We'll do a simplified version here since we're crossing libraries
+    
+    final_items = []
+    seen_locations = set()
+    
+    for entry in top_items:
+        key, locations, title, media_type = entry['tuple']
+        
+        # For episodes, check locations to avoid duplicates (multi-episode files)
+        if media_type == 'episode' and locations:
+            if any(loc in seen_locations for loc in locations):
+                continue
+            seen_locations.update(locations)
+            
+        final_items.append((key, title, media_type))
+        
+    logger.info(f"Found {len(final_items)} recent items to prioritize")
+    return final_items
+
+
 def get_library_sections(plex, config: Config):
     """
     Get all library sections from Plex server.
