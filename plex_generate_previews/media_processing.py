@@ -733,8 +733,6 @@ def process_item(item_key: str, gpu: Optional[str], gpu_device_path: Optional[st
                 # Use file path directly (for local generation)
                 media_file = sanitize_path(media_part.attrib['file'])
 
-            logger.info(f'Processing file: {media_file}')
-
             # Validate bundle_hash has sufficient length (at least 2 characters)
             if not bundle_hash or len(bundle_hash) < 2:
                 hash_value = f'"{bundle_hash}"' if bundle_hash else '(empty)'
