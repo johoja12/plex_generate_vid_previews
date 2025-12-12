@@ -11,6 +11,8 @@ import http.client
 import xml.etree.ElementTree
 import requests
 import urllib3
+import sqlite3
+from typing import Optional
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from loguru import logger
@@ -116,25 +118,133 @@ def filter_duplicate_locations(media_items):
     It keeps the first occurrence and skips subsequent duplicates.
     
     Args:
-        media_items: List of tuples (key, locations, title, media_type)
+        media_items: List of tuples (key, locations, title, media_type, bundle_hash, added_at)
     
     Returns:
-        list: Filtered list of tuples (key, title, media_type) without duplicates
+        list: Filtered list of tuples (key, title, media_type, bundle_hash, added_at) without duplicates
     """
     seen_locations = set()
     filtered_items = []
     
-    for key, locations, title, media_type in media_items:            
+    for key, locations, title, media_type, bundle_hash, added_at in media_items:            
         # Check if any location has been seen before
         if any(location in seen_locations for location in locations):
             continue
             
         # Add all locations to seen set and keep this item
         seen_locations.update(locations)
-        filtered_items.append((key, title, media_type))  # Return tuple with key, title, and media_type
+        filtered_items.append((key, title, media_type, bundle_hash, added_at))
     
     return filtered_items
 
+
+def get_first_hash(item):
+    """Get the bundle hash of the first part of the first media."""
+    try:
+        return item.media[0].parts[0].hash
+    except (IndexError, AttributeError):
+        return None
+
+
+def get_hash_with_fallback(item, plex_config_folder: str) -> Optional[str]:
+    """
+    Get the bundle hash directly from the Plex database.
+
+    Queries the Plex database using the item ID for better performance
+    and reliability compared to API responses.
+
+    Args:
+        item: Plex media item object
+        plex_config_folder: Path to Plex config folder
+
+    Returns:
+        str: Bundle hash if found, None otherwise
+    """
+    # Query database directly using item ID (more reliable than API)
+    try:
+        import sqlite3
+        db_path = os.path.join(plex_config_folder, 'Plug-in Support', 'Databases', 'com.plexapp.plugins.library.db')
+
+        if not os.path.exists(db_path):
+            logger.debug(f"Plex database not found at: {db_path}")
+            return None
+
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+
+        # Query hash directly by metadata item ID
+        cursor.execute("SELECT hash FROM metadata_items WHERE id = ?", (item.ratingKey,))
+        result = cursor.fetchone()
+
+        conn.close()
+
+        if result and result[0]:
+            logger.debug(f"Retrieved hash from database for item {item.ratingKey} ({item.title}): {result[0]}")
+            return result[0]
+        else:
+            logger.debug(f"No hash found in database for item {item.ratingKey} ({item.title})")
+            return None
+
+    except sqlite3.Error as e:
+        logger.error(f"Database error while querying hash for {item.title}: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error querying database for {item.title}: {type(e).__name__}: {e}")
+        return None
+
+
+def get_hash_from_database(plex_config_folder: str, file_path: str) -> str:
+    """
+    Query the bundle hash directly from the Plex SQLite database.
+
+    This is a fallback method when the Plex API doesn't return a hash.
+
+    Args:
+        plex_config_folder: Path to Plex config folder
+        file_path: Full path to the media file
+
+    Returns:
+        str: Bundle hash if found, None otherwise
+    """
+    db_path = os.path.join(plex_config_folder, 'Plug-in Support', 'Databases',
+                           'com.plexapp.plugins.library.db')
+
+    if not os.path.exists(db_path):
+        logger.warning(f"Plex database not found at: {db_path}")
+        return None
+
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+
+        # Query to get hash for the given file path
+        query = """
+            SELECT metadata_items.hash
+            FROM media_parts
+            JOIN media_items ON media_parts.media_item_id = media_items.id
+            JOIN metadata_items ON metadata_items.id = media_items.metadata_item_id
+            WHERE media_parts.file = ?
+            LIMIT 1
+        """
+
+        cursor.execute(query, (file_path,))
+        result = cursor.fetchone()
+
+        conn.close()
+
+        if result and result[0]:
+            logger.debug(f"Found hash in database for {file_path}: {result[0]}")
+            return result[0]
+        else:
+            logger.debug(f"No hash found in database for {file_path}")
+            return None
+
+    except sqlite3.Error as e:
+        logger.error(f"Database error while querying hash for {file_path}: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error querying database for {file_path}: {type(e).__name__}: {e}")
+        return None
 
 def get_library_sections(plex, config: Config):
     """
@@ -195,7 +305,7 @@ def get_library_sections(plex, config: Config):
                     show_title = m.grandparentTitle
                     season_episode = m.seasonEpisode.upper()
                     formatted_title = f"{show_title} {season_episode}"
-                    media_with_locations.append((m.key, m.locations, formatted_title, 'episode'))
+                    media_with_locations.append((m.ratingKey, m.locations, formatted_title, 'episode', get_hash_with_fallback(m, config.plex_config_folder), m.addedAt))
                 # Filter out multi episode files based on file locations
                 media = filter_duplicate_locations(media_with_locations)
             elif section.METADATA_TYPE == 'movie':
@@ -203,7 +313,7 @@ def get_library_sections(plex, config: Config):
                 if sort_param:
                     search_kwargs['sort'] = sort_param
                 search_results = retry_plex_call(section.search, **search_kwargs)
-                media = [(m.key, m.title, 'movie') for m in search_results]
+                media = [(m.ratingKey, m.title, 'movie', get_hash_with_fallback(m, config.plex_config_folder), m.addedAt) for m in search_results]
             else:
                 logger.info('Skipping library {} as \'{}\' is unsupported'.format(section.title, section.METADATA_TYPE))
                 continue
