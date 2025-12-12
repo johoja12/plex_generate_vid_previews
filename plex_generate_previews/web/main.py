@@ -327,6 +327,41 @@ async def verify_completed(
         "moved_to_missing": result["moved_to_missing"]
     }
 
+@app.post("/api/settings/cleanup-orphaned-bundles")
+async def cleanup_orphaned_bundles(
+    payload: dict = Body(default={}),
+    user: str = Depends(login_required)
+):
+    """Scan for and optionally delete orphaned bundle directories not in Plex DB."""
+    if not scheduler.config:
+        raise HTTPException(status_code=400, detail="Scheduler not configured")
+
+    dry_run = payload.get("dry_run", True)
+    result = scheduler.cleanup_orphaned_bundles(dry_run=dry_run)
+
+    if "error" in result:
+        raise HTTPException(status_code=500, detail=result["error"])
+
+    if dry_run:
+        size_mb = result["total_size"] / 1024 / 1024
+        return {
+            "message": f"Dry run complete. Found {result['found']} orphaned bundles ({size_mb:.2f} MB). Run with dry_run=false to delete.",
+            "found": result["found"],
+            "total_size": result["total_size"],
+            "dry_run": True,
+            "sample_paths": result.get("sample_paths", [])
+        }
+    else:
+        deleted_mb = result["deleted_size"] / 1024 / 1024
+        return {
+            "message": f"Deleted {result['deleted']} orphaned bundles (freed {deleted_mb:.2f} MB).",
+            "found": result["found"],
+            "deleted": result["deleted"],
+            "deleted_size": result["deleted_size"],
+            "dry_run": False,
+            "errors": result.get("errors", [])
+        }
+
 @app.post("/api/items/{item_id}/move")
 async def move_item(
     item_id: int,

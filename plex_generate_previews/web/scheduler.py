@@ -517,6 +517,127 @@ class Scheduler:
             logger.error(traceback.format_exc())
             return {"scanned": 0, "found": 0, "error": str(e)}
 
+    def cleanup_orphaned_bundles(self, dry_run: bool = True):
+        """
+        Scan for orphaned bundle directories (not in Plex DB) and optionally delete them.
+
+        Args:
+            dry_run: If True, only report what would be deleted without actually deleting
+
+        Returns:
+            dict: Results with found/deleted counts and paths
+        """
+        logger.info(f"Scanning for orphaned bundle directories (dry_run={dry_run})...")
+
+        if not self.config:
+            logger.error("Cannot cleanup: scheduler not configured")
+            return {"error": "Scheduler not configured"}
+
+        try:
+            import sqlite3
+            import shutil
+
+            # Get Plex database path
+            db_path = os.path.join(self.config.plex_config_folder, 'Plug-in Support', 'Databases', 'com.plexapp.plugins.library.db')
+
+            if not os.path.exists(db_path):
+                logger.error(f"Plex database not found at: {db_path}")
+                return {"error": "Plex database not found"}
+
+            # Get all bundle hashes from Plex database
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT hash FROM metadata_items WHERE hash IS NOT NULL")
+            db_hashes = set(row[0] for row in cursor.fetchall())
+            conn.close()
+
+            logger.info(f"Found {len(db_hashes)} bundle hashes in Plex database")
+
+            # Scan filesystem for bundle directories
+            media_localhost_path = os.path.join(self.config.plex_config_folder, 'Media', 'localhost')
+
+            if not os.path.exists(media_localhost_path):
+                logger.warning(f"Media path does not exist: {media_localhost_path}")
+                return {"error": "Media path not found"}
+
+            orphaned_bundles = []
+            total_size = 0
+
+            # Iterate through all bundle directories
+            for first_char_dir in os.listdir(media_localhost_path):
+                first_char_path = os.path.join(media_localhost_path, first_char_dir)
+
+                if not os.path.isdir(first_char_path):
+                    continue
+
+                for bundle_dir in os.listdir(first_char_path):
+                    if not bundle_dir.endswith('.bundle'):
+                        continue
+
+                    bundle_path = os.path.join(first_char_path, bundle_dir)
+
+                    # Extract hash from directory name
+                    # Format: {hash}.bundle, and full hash is first_char + hash
+                    bundle_hash_part = bundle_dir.replace('.bundle', '')
+                    full_hash = first_char_dir + bundle_hash_part
+
+                    # Check if this hash exists in Plex database
+                    if full_hash not in db_hashes:
+                        # Calculate size
+                        try:
+                            dir_size = sum(
+                                os.path.getsize(os.path.join(dirpath, filename))
+                                for dirpath, dirnames, filenames in os.walk(bundle_path)
+                                for filename in filenames
+                            )
+                            total_size += dir_size
+                            orphaned_bundles.append({
+                                'path': bundle_path,
+                                'hash': full_hash,
+                                'size': dir_size
+                            })
+                        except Exception as e:
+                            logger.warning(f"Could not calculate size for {bundle_path}: {e}")
+
+            logger.info(f"Found {len(orphaned_bundles)} orphaned bundle directories (total size: {total_size / 1024 / 1024:.2f} MB)")
+
+            deleted_count = 0
+            deleted_size = 0
+            errors = []
+
+            if not dry_run:
+                # Actually delete the orphaned bundles
+                for bundle in orphaned_bundles:
+                    try:
+                        logger.info(f"Deleting orphaned bundle: {bundle['path']}")
+                        shutil.rmtree(bundle['path'])
+                        deleted_count += 1
+                        deleted_size += bundle['size']
+                    except Exception as e:
+                        error_msg = f"Failed to delete {bundle['path']}: {e}"
+                        logger.error(error_msg)
+                        errors.append(error_msg)
+
+                logger.info(f"Deleted {deleted_count} orphaned bundles (freed {deleted_size / 1024 / 1024:.2f} MB)")
+            else:
+                logger.info("Dry run - no bundles deleted")
+
+            return {
+                "found": len(orphaned_bundles),
+                "deleted": deleted_count,
+                "total_size": total_size,
+                "deleted_size": deleted_size,
+                "dry_run": dry_run,
+                "errors": errors,
+                "sample_paths": [b['path'] for b in orphaned_bundles[:5]]
+            }
+
+        except Exception as e:
+            logger.error(f"Orphaned bundle cleanup failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {"error": str(e)}
+
     def verify_completed_items(self, confirm_threshold: bool = False):
         """Verify that COMPLETED items actually have BIF files. Move to MISSING if not.
 

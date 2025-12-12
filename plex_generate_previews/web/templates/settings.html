@@ -105,6 +105,33 @@
                     </div>
                 </div>
                 <div x-show="verifyResult" x-transition class="p-3 rounded bg-blue-900/30 text-blue-200" x-text="verifyResult"></div>
+
+                <!-- Cleanup Orphaned Bundles -->
+                <div class="flex justify-between items-center pt-4 border-t border-blue-800">
+                    <div>
+                        <h3 class="font-bold text-blue-300">Cleanup Orphaned Bundles</h3>
+                        <p class="text-sm text-gray-400">Scans for bundle directories that no longer exist in Plex database (deleted media) and optionally removes them to free disk space.</p>
+                    </div>
+                    <div class="flex space-x-2">
+                        <button @click="cleanupOrphaned(true)" :disabled="cleaningUp" class="bg-yellow-600 hover:bg-yellow-700 disabled:bg-gray-600 text-white font-bold py-2 px-4 rounded transition flex items-center">
+                            <span x-show="!cleaningUp">🔍 Dry Run</span>
+                            <span x-show="cleaningUp" class="flex items-center">
+                                <span class="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full mr-2"></span>
+                                Scanning...
+                            </span>
+                        </button>
+                        <button @click="cleanupOrphaned(false)" :disabled="cleaningUp" class="bg-red-600 hover:bg-red-700 disabled:bg-gray-600 text-white font-bold py-2 px-4 rounded transition flex items-center">
+                            <span x-show="!cleaningUp">🗑️ Delete</span>
+                            <span x-show="cleaningUp" class="flex items-center">
+                                <span class="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full mr-2"></span>
+                                Deleting...
+                            </span>
+                        </button>
+                    </div>
+                </div>
+                <div x-show="cleanupResult" x-transition class="p-3 rounded bg-blue-900/30 text-blue-200">
+                    <div x-html="cleanupResult"></div>
+                </div>
             </div>
         </div>
 
@@ -235,6 +262,8 @@
                 discoverResult: '',
                 verifying: false,
                 verifyResult: '',
+                cleaningUp: false,
+                cleanupResult: '',
                 missingHashes: {
                     items: [],
                     total: 0,
@@ -483,6 +512,55 @@
                         this.verifyResult = `✗ Error: ${e.message}`;
                     } finally {
                         this.verifying = false;
+                    }
+                },
+
+                async cleanupOrphaned(dryRun = true) {
+                    this.cleaningUp = true;
+                    this.cleanupResult = '';
+
+                    try {
+                        const res = await fetch('/api/settings/cleanup-orphaned-bundles', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({ dry_run: dryRun })
+                        });
+                        const data = await res.json();
+
+                        if (res.ok) {
+                            if (dryRun) {
+                                const sizeMB = (data.total_size / 1024 / 1024).toFixed(2);
+                                let result = `🔍 Dry Run Complete<br><strong>Found ${data.found} orphaned bundles</strong> (${sizeMB} MB)`;
+
+                                if (data.found > 0) {
+                                    result += '<br><br>These bundles no longer exist in Plex database and can be safely deleted.';
+                                    if (data.sample_paths && data.sample_paths.length > 0) {
+                                        result += '<br><br><strong>Sample paths:</strong><br>' + data.sample_paths.slice(0, 3).join('<br>');
+                                    }
+                                    result += '<br><br>Click "🗑️ Delete" to remove them and free up disk space.';
+                                } else {
+                                    result += '<br><br>✓ No orphaned bundles found. Your media directory is clean!';
+                                }
+
+                                this.cleanupResult = result;
+                            } else {
+                                const deletedMB = (data.deleted_size / 1024 / 1024).toFixed(2);
+                                let result = `✓ Cleanup Complete<br><strong>Deleted ${data.deleted} bundles</strong> (freed ${deletedMB} MB)`;
+
+                                if (data.errors && data.errors.length > 0) {
+                                    result += `<br><br>⚠️ ${data.errors.length} errors occurred:<br>` + data.errors.slice(0, 3).join('<br>');
+                                }
+
+                                this.cleanupResult = result;
+                                setTimeout(() => this.cleanupResult = '', 15000);
+                            }
+                        } else {
+                            this.cleanupResult = `✗ Error: ${data.detail || 'Failed to cleanup bundles'}`;
+                        }
+                    } catch (e) {
+                        this.cleanupResult = `✗ Error: ${e.message}`;
+                    } finally {
+                        this.cleaningUp = false;
                     }
                 },
 
