@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Setup - Plex Preview Gen</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <style>
+        body { background-color: #1a1a1a; color: #e5e5e5; }
+        [x-cloak] { display: none !important; }
+        .step-circle { width: 2rem; height: 2rem; display: flex; align-items: center; justify-content: center; border-radius: 9999px; font-weight: bold; }
+        .step-active { background-color: #f97316; color: white; }
+        .step-inactive { background-color: #374151; color: #9ca3af; }
+    </style>
+</head>
+<body class="flex items-center justify-center min-h-screen p-4" x-data="setup()">
+    <div class="w-full max-w-2xl bg-gray-800 rounded-lg shadow-xl overflow-hidden border border-gray-700">
+        <div class="p-6 bg-gray-900 border-b border-gray-700">
+            <h1 class="text-2xl font-bold text-orange-500">Plex Preview Generator Setup</h1>
+            <p class="text-gray-400 text-sm mt-1">Configure your Plex Server connection</p>
+        </div>
+
+        <div class="p-8">
+            <!-- Step Indicators -->
+            <div class="flex items-center justify-between mb-8 px-8">
+                <div class="flex flex-col items-center">
+                    <div class="step-circle" :class="step >= 1 ? 'step-active' : 'step-inactive'">1</div>
+                    <span class="text-xs mt-1 text-gray-400">Auth</span>
+                </div>
+                <div class="h-1 bg-gray-700 flex-1 mx-4">
+                    <div class="h-full bg-orange-500 transition-all duration-500" :style="'width: ' + ((step-1)/2)*100 + '%'"></div>
+                </div>
+                <div class="flex flex-col items-center">
+                    <div class="step-circle" :class="step >= 2 ? 'step-active' : 'step-inactive'">2</div>
+                    <span class="text-xs mt-1 text-gray-400">Server</span>
+                </div>
+                <div class="h-1 bg-gray-700 flex-1 mx-4">
+                    <div class="h-full bg-orange-500 transition-all duration-500" :style="'width: ' + ((step >= 3 ? 1 : 0) * 100) + '%'"></div>
+                </div>
+                <div class="flex flex-col items-center">
+                    <div class="step-circle" :class="step >= 3 ? 'step-active' : 'step-inactive'">3</div>
+                    <span class="text-xs mt-1 text-gray-400">Finish</span>
+                </div>
+            </div>
+
+            <!-- Step 1: Auth -->
+            <div x-show="step === 1" x-transition.opacity>
+                <div class="text-center">
+                    <div class="mb-6">
+                        <svg class="w-16 h-16 mx-auto text-orange-500" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/>
+                        </svg>
+                        <h2 class="text-xl font-semibold mt-4">Link your Plex Account</h2>
+                        <p class="text-gray-400 mt-2">Sign in to Plex to securely authorize this application.</p>
+                    </div>
+
+                    <div x-show="!authUrl">
+                        <button @click="startAuth" class="bg-orange-500 hover:bg-orange-600 text-white font-bold py-3 px-6 rounded-lg shadow-lg transition transform hover:scale-105 flex items-center justify-center mx-auto">
+                            <span>Sign in with Plex</span>
+                        </button>
+                    </div>
+
+                    <div x-show="authUrl" x-cloak class="space-y-4">
+                        <div class="p-4 bg-gray-700 rounded-lg">
+                            <p class="mb-2 font-bold text-lg" x-text="pinCode"></p>
+                            <a :href="authUrl" target="_blank" class="text-blue-400 hover:underline break-all" x-text="authUrl"></a>
+                        </div>
+                        <p class="text-sm text-gray-400">Click the link above to authorize. Waiting for confirmation...</p>
+                        <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-orange-500 mx-auto"></div>
+                    </div>
+                    
+                    <div x-show="error" class="mt-4 text-red-500" x-text="error"></div>
+                </div>
+            </div>
+
+            <!-- Step 2: Select Server -->
+            <div x-show="step === 2" x-transition.opacity x-cloak>
+                <h2 class="text-xl font-semibold mb-4">Select Plex Server</h2>
+                <div x-show="loadingServers" class="text-center py-8">
+                    <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-orange-500 mx-auto mb-2"></div>
+                    <p class="text-gray-400">Scanning for servers...</p>
+                </div>
+                
+                <div x-show="!loadingServers" class="space-y-3">
+                    <template x-for="server in servers" :key="server.clientIdentifier">
+                        <div @click="selectServer(server)" 
+                             class="p-4 rounded border cursor-pointer transition flex justify-between items-center"
+                             :class="selectedServer?.clientIdentifier === server.clientIdentifier ? 'bg-orange-900 border-orange-500' : 'bg-gray-700 border-gray-600 hover:bg-gray-600'">
+                            <div>
+                                <h3 class="font-bold" x-text="server.name"></h3>
+                                <p class="text-xs text-gray-400" x-text="server.connections[0]?.uri || 'Remote'"></p>
+                            </div>
+                            <div x-show="selectedServer?.clientIdentifier === server.clientIdentifier" class="text-orange-500">
+                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                            </div>
+                        </div>
+                    </template>
+                    <div x-show="servers.length === 0" class="text-center text-gray-500 p-4 border border-gray-700 rounded bg-gray-800">
+                        <p class="font-bold text-lg mb-2">No servers found</p>
+                        <p class="text-sm">We couldn't find any Plex Media Servers associated with your account.</p>
+                        <ul class="text-left text-sm mt-3 space-y-1 list-disc list-inside">
+                            <li>Ensure you are signed into the correct Plex account.</li>
+                            <li>Ensure your Plex Server is claimed and accessible remotely.</li>
+                            <li>If running in Docker, ensure the container has internet access.</li>
+                        </ul>
+                        <button @click="fetchServers" class="mt-4 text-blue-400 hover:text-blue-300 underline">Try Again</button>
+                    </div>
+                </div>
+                
+                <div class="mt-6 flex justify-end">
+                    <button @click="saveConfiguration" :disabled="!selectedServer" class="bg-green-600 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold py-2 px-6 rounded transition">
+                        Save & Connect
+                    </button>
+                </div>
+            </div>
+
+            <!-- Step 3: Success -->
+            <div x-show="step === 3" x-transition.opacity x-cloak class="text-center py-8">
+                <div class="w-16 h-16 bg-green-500 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <svg class="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                </div>
+                <h2 class="text-2xl font-bold text-white mb-2">Setup Complete!</h2>
+                <p class="text-gray-400 mb-6">Your Plex server has been linked successfully.</p>
+                <button @click="window.location.href = '/'" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-6 rounded transition">
+                    Go to Dashboard
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function setup() {
+            return {
+                step: 1,
+                pinId: null,
+                pinCode: null,
+                authUrl: null,
+                authToken: null,
+                error: null,
+                pollInterval: null,
+                loadingServers: false,
+                servers: [],
+                selectedServer: null,
+
+                async startAuth() {
+                    try {
+                        const res = await fetch('/api/setup/plex/pin', { method: 'POST' });
+                        const data = await res.json();
+                        this.pinId = data.id;
+                        this.pinCode = data.code;
+                        this.authUrl = data.url;
+                        
+                        this.pollInterval = setInterval(() => this.checkPin(), 2000);
+                    } catch (e) {
+                        this.error = "Failed to start auth flow";
+                        console.error(e);
+                    }
+                },
+
+                async checkPin() {
+                    try {
+                        const res = await fetch(`/api/setup/plex/check/${this.pinId}`);
+                        const data = await res.json();
+                        
+                        if (data.auth_token) {
+                            clearInterval(this.pollInterval);
+                            this.authToken = data.auth_token;
+                            this.step = 2;
+                            this.fetchServers();
+                        }
+                    } catch (e) {
+                        console.error("Polling error", e);
+                    }
+                },
+
+                async fetchServers() {
+                    this.loadingServers = true;
+                    try {
+                        const res = await fetch(`/api/setup/plex/servers?token=${this.authToken}`);
+                        const data = await res.json();
+                        this.servers = data.servers;
+                    } catch (e) {
+                        this.error = "Failed to fetch servers";
+                    } finally {
+                        this.loadingServers = false;
+                    }
+                },
+
+                selectServer(server) {
+                    this.selectedServer = server;
+                },
+
+                async saveConfiguration() {
+                    if (!this.selectedServer) return;
+
+                    try {
+                        const payload = {
+                            plex_url: this.selectedServer.connections[0].uri, // Use first connection for now
+                            plex_token: this.selectedServer.accessToken || this.authToken, // Use server token or fallback to user token
+                            plex_server_name: this.selectedServer.name,
+                            plex_client_identifier: this.selectedServer.clientIdentifier // Required for app.plex.tv links
+                        };
+
+                        console.log('Saving Plex configuration:', payload);
+
+                        const res = await fetch('/api/setup/save', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify(payload)
+                        });
+
+                        if (res.ok) {
+                            this.step = 3;
+                        } else {
+                            const errorData = await res.json().catch(() => ({ detail: 'Unknown error' }));
+                            this.error = `Failed to save configuration: ${errorData.detail}`;
+                            console.error('Setup save error:', errorData);
+                        }
+                    } catch (e) {
+                        this.error = "Error saving config: " + e.message;
+                        console.error('Exception during save:', e);
+                    }
+                }
+            }
+        }
+    </script>
+</body>
+</html>

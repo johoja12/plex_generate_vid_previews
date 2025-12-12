@@ -16,6 +16,7 @@ from loguru import logger
 from .config import Config
 from .media_processing import process_item, CodecNotSupportedError
 from .utils import format_display_title
+from .progress_reporter import ProgressManager
 
 
 class Worker:
@@ -46,6 +47,8 @@ class Worker:
         self.is_busy = False
         self.current_thread = None
         self.current_task = None
+        self.failed_state = False
+        self.error_message = None  # Error message for failed tasks
         
         # Progress tracking
         self.progress_percent = 0
@@ -147,6 +150,8 @@ class Worker:
         # Reset all progress tracking to ensure clean state
         self.is_busy = True
         self.current_task = item_key
+        self.failed_state = False
+        self.error_message = None
         self.media_title = media_title
         self.media_type = media_type
         self.media_file = ""  # Will be populated by progress callback
@@ -204,6 +209,11 @@ class Worker:
         
         try:
             process_item(item_key, self.gpu, self.gpu_device, config, plex, progress_callback)
+            
+            # Ensure 100% progress is reported upon success
+            if progress_callback:
+                progress_callback(100, self.total_duration, self.total_duration, speed="Finished")
+
             # Mark as completed immediately (thread will finish after this)
             self.completed += 1
         except CodecNotSupportedError as e:
@@ -218,38 +228,56 @@ class Worker:
                         logger.debug(f"Added {display_name} to CPU fallback queue")
                     except Exception as queue_error:
                         logger.error(f"Failed to add {item_key} to fallback queue: {queue_error}")
+                        error_msg = f"Failed to add to fallback queue: {str(queue_error)}"
+                        self.error_message = error_msg
+                        if progress_callback:
+                            progress_callback(0, 0, 0, speed="Failed", failed=True, error_message=error_msg)
                         self.failed += 1
                 else:
                     if config.cpu_threads == 0:
+                        error_msg = f"Codec not supported by GPU, CPU threads disabled: {str(e)}"
                         logger.warning(f"Codec not supported by GPU, but CPU threads are disabled (CPU_THREADS=0); skipping {display_name}")
+                        self.error_message = error_msg
+                        if progress_callback:
+                            progress_callback(0, 0, 0, speed="Failed", failed=True, error_message=error_msg)
                     self.failed += 1
                 # Mark as completed from GPU worker perspective (task will be handled by CPU)
                 self.completed += 1
             else:
                 # CPU worker received codec error - this is unexpected, treat as failure
+                error_msg = f"CPU codec error (file may be corrupted): {str(e)}"
                 logger.error(f"CPU Worker {self.worker_id} encountered codec error for {display_name}: {e}")
                 logger.error("Codec errors should not occur on CPU workers - file may be corrupted")
+                self.error_message = error_msg
+                if progress_callback:
+                    progress_callback(0, 0, 0, speed="Failed", failed=True, error_message=error_msg)
                 self.failed += 1
         except Exception as e:
+            error_msg = str(e)
             logger.error(f"Worker {self.worker_id} failed to process {display_name}: {e}")
+            logger.debug(f"Traceback for {display_name}:", exc_info=True)
+            self.error_message = error_msg
+            if progress_callback:
+                progress_callback(0, 0, 0, speed="Failed", failed=True, error_message=error_msg)
             self.failed += 1
     
     def check_completion(self) -> bool:
         """
         Check if this worker has completed its current task.
-        
+
         Returns:
             bool: True if task completed, False if still running
         """
         if not self.is_busy:
             return False  # Worker is available, not completing
-        
+
         if self.current_thread and not self.current_thread.is_alive():
-            # Thread finished, mark as completed
+            # Thread finished - mark as completed but keep task info for final update
+            # Don't clear current_task yet - it's needed for the final progress update
             self.is_busy = False
-            self.current_task = None
+            # Note: current_task will be cleared after final progress update in process_items loop
             return True
-        
+
         return False
     
     def get_progress_data(self) -> dict:
@@ -264,6 +292,10 @@ class Worker:
             'remaining_time': self.remaining_time,
             'worker_id': self.worker_id,  # Add worker ID for debugging
             'worker_type': self.worker_type,  # Add worker type for debugging
+            'item_key': self.current_task,
+            'failed': self.failed_state,
+            'error_message': self.error_message,  # Error message for failed tasks
+            'media_file': self.media_file,  # Media file path being processed
             # FFmpeg data for display
             'frame': self.frame,
             'fps': self.fps,
@@ -445,7 +477,7 @@ class WorkerPool:
         except queue.Empty:
             return True
     
-    def process_items(self, media_items: List[tuple], config: Config, plex, worker_progress, main_progress, main_task_id=None, title_max_width: int = 20, library_name: str = "") -> None:
+    def process_items(self, media_items: List[tuple], config: Config, plex, progress_manager: ProgressManager, title_max_width: int = 20, library_name: str = "", stop_condition=None) -> None:
         """
         Process all media items using available workers.
         
@@ -455,10 +487,10 @@ class WorkerPool:
             media_items: List of tuples (key, title, media_type) to process
             config: Configuration object
             plex: Plex server instance
-            progress: Rich Progress object for displaying worker progress
-            main_task_id: ID of the main progress task to update
+            progress_manager: ProgressManager instance for handling progress updates
             title_max_width: Maximum width for title display
             library_name: Name of the library section being processed
+            stop_condition: Optional callable returning True if processing should stop
         """
         media_queue = list(media_items)  # Copy the list
         completed_tasks = 0
@@ -470,37 +502,51 @@ class WorkerPool:
         
         logger.info(f'Processing {total_items} items with {len(self.workers)} workers')
         
-        # Create progress tasks for each worker in the worker progress instance
-        for worker in self.workers:
-            worker.progress_task_id = worker_progress.add_task(
-                worker._format_idle_description(),
-                total=100,
-                completed=0,
-                speed="0.0x",
-                style="cyan"
-            )
+        # Initialize worker progress tracking
+        progress_manager.init_workers(self.workers)
         
         # Process all items
         # Continue while we have items in main queue, fallback queue, or busy workers
         # Exit conditions: main queue empty, all items processed, no busy workers, fallback queue empty
-        while True: 
+        while True:
             # Check for completed tasks and update progress
             for worker in self.workers:
                 if worker.check_completion():
                     completed_tasks += 1
-                    # Update main progress bar if main_task_id is provided
-                    if main_task_id is not None:
-                        main_progress.update(main_task_id, completed=completed_tasks)
-                
+                    # Update main progress
+                    progress_manager.update_main_progress(completed_tasks, total_items)
+
+                    # Send final progress update with 100% if not already sent
+                    # Worker is no longer busy but still has task info for final update
+                    with self._progress_lock:
+                        if worker.current_task:
+                            # Send final update only if task didn't fail
+                            if worker.failed_state:
+                                # Task failed - ensure failed state is communicated
+                                final_progress_data = worker.get_progress_data()
+                                final_progress_data['failed'] = True
+                                final_progress_data['is_busy'] = False
+                                progress_manager.update_worker(worker.worker_id, final_progress_data)
+                                logger.debug(f"Sent final failed update for worker {worker.worker_id}, item {worker.current_task}")
+                            elif worker.progress_percent >= 99:
+                                # Task succeeded - send 100% completion
+                                final_progress_data = worker.get_progress_data()
+                                final_progress_data['progress_percent'] = 100
+                                final_progress_data['is_busy'] = False  # Important: worker is done but has data
+                                progress_manager.update_worker(worker.worker_id, final_progress_data)
+                                logger.debug(f"Sent final 100% progress update for worker {worker.worker_id}, item {worker.current_task}")
+                        # Now clear the task after final update
+                        worker.current_task = None
+
                 # Update worker progress display with thread-safe access
                 current_time = time.time()
-                
+
                 # Use thread-safe access to worker progress data
                 with self._progress_lock:
                     progress_data = worker.get_progress_data()
                     is_busy = worker.is_busy
                     ffmpeg_started = worker.ffmpeg_started
-                
+
                 if is_busy:
                     # Update busy worker only if progress or speed changed and enough time has passed
                     should_update = (
@@ -511,33 +557,26 @@ class WorkerPool:
                     )
                     
                     if should_update:
-                        # Use the formatted display title
-                        worker_progress.update(
-                            worker.progress_task_id,
-                            description=worker.task_title,
-                            completed=progress_data['progress_percent'],
-                            speed=progress_data['speed'],
-                            remaining_time=progress_data['remaining_time'],
-                            # FFmpeg data for display
-                            frame=progress_data['frame'],
-                            fps=progress_data['fps'],
-                            q=progress_data['q'],
-                            size=progress_data['size'],
-                            time_str=progress_data['time_str'],
-                            bitrate=progress_data['bitrate']
-                        )
+                        progress_manager.update_worker(worker.worker_id, progress_data)
                         worker.last_progress_percent = progress_data['progress_percent']
                         worker.last_speed = progress_data['speed']
                         worker.last_update_time = current_time
                 else:
                     # Update idle worker only if it was previously busy
                     if worker.last_progress_percent != -1:
-                        worker_progress.update(
-                            worker.progress_task_id,
-                            description=worker._format_idle_description(),
-                            completed=0,
-                            speed="0.0x"
-                        )
+                        # Create generic idle data
+                        idle_data = {
+                            'progress_percent': 0,
+                            'speed': "0.0x",
+                            'task_title': worker._format_idle_description(),
+                            'is_busy': False,
+                            'current_duration': 0,
+                            'total_duration': 0,
+                            'remaining_time': 0,
+                            'frame': 0, 'fps': 0, 'q': 0, 'size': 0, 
+                            'time_str': "", 'bitrate': 0
+                        }
+                        progress_manager.update_worker(worker.worker_id, idle_data)
                         worker.last_progress_percent = -1
                         worker.last_speed = ""
             
@@ -546,29 +585,49 @@ class WorkerPool:
             if current_time - last_overall_progress_log >= 5.0:
                 progress_percent = int((completed_tasks / total_items) * 100) if total_items > 0 else 0
                 logger.info(f"Processing progress {library_prefix}{completed_tasks}/{total_items} ({progress_percent}%) completed")
+
+                # Log which workers are busy and what they're processing (for debugging stuck workers)
+                busy_workers = [w for w in self.workers if w.is_busy]
+                if busy_workers:
+                    logger.debug(f"Busy workers: {len(busy_workers)}/{len(self.workers)}")
+                    for worker in busy_workers:
+                        with self._progress_lock:
+                            task_info = f"{worker.worker_id}: {worker.task_title} ({worker.progress_percent}%)"
+                            if worker.current_thread and worker.current_thread.is_alive():
+                                logger.debug(f"  {task_info} [thread alive]")
+                            else:
+                                logger.warning(f"  {task_info} [thread DEAD but still marked busy]")
+
                 last_overall_progress_log = current_time
             
             # Assign new tasks to available workers
             # Prioritize fallback queue for CPU workers, then assign from main queue
-            while True:
-                # If main queue is empty, only look for CPU workers (to process fallback queue)
-                cpu_only = not media_queue
-                available_worker = self._find_available_worker(cpu_only=cpu_only)
-                if not available_worker:
-                    break
-                
-                # For CPU workers, try fallback queue first (codec error fallback)
-                if available_worker.worker_type == 'CPU':
-                    if self._assign_fallback_task(available_worker, config, plex, title_max_width):
-                        continue
-                    # No fallback items - if main queue is also empty, break
-                    if not media_queue:
+            # Only assign if not stopped
+            if not (stop_condition and stop_condition()):
+                while True:
+                    # If main queue is empty, only look for CPU workers (to process fallback queue)
+                    cpu_only = not media_queue
+                    available_worker = self._find_available_worker(cpu_only=cpu_only)
+                    if not available_worker:
                         break
-                
-                # Assign from main queue (for GPU workers or when main queue has items)
-                if not self._assign_main_queue_task(available_worker, media_queue, config, plex, title_max_width):
-                    break
+                    
+                    # For CPU workers, try fallback queue first (codec error fallback)
+                    if available_worker.worker_type == 'CPU':
+                        if self._assign_fallback_task(available_worker, config, plex, title_max_width):
+                            continue
+                        # No fallback items - if main queue is also empty, break
+                        if not media_queue:
+                            break
+                    
+                    # Assign from main queue (for GPU workers or when main queue has items)
+                    if not self._assign_main_queue_task(available_worker, media_queue, config, plex, title_max_width):
+                        break
             
+            # Check exit condition if stopped and idle
+            if stop_condition and stop_condition() and not self.has_busy_workers():
+                logger.info("Processing paused/stopped and all workers finished.")
+                break
+
             # Check exit condition after trying to assign all tasks
             # Exit only if: main queue empty, all items processed, and fallback queue empty
             if not media_queue:
@@ -576,22 +635,16 @@ class WorkerPool:
                 for worker in self.workers:
                     if worker.check_completion():
                         completed_tasks += 1
+                        progress_manager.update_main_progress(completed_tasks, total_items)
                 
                 # Calculate actual completed count from worker stats (most reliable)
-                # This uses worker.completed which is set directly in _process_item
-                # This is set when the task actually completes, before the thread finishes
-                # Also count failed items - they've been processed even if they failed
                 actual_completed = sum(worker.completed for worker in self.workers)
                 actual_failed = sum(worker.failed for worker in self.workers)
                 actual_processed = actual_completed + actual_failed
                 
                 # Exit if all items processed (completed or failed)
-                # Note: actual_completed can be >= total_items if GPU hands off to CPU
-                # (GPU marks as completed + CPU marks as completed = 2 for 1 item)
-                # So we check that we've processed at least total_items
                 if actual_processed >= total_items:
                     # Give threads time to finish and update is_busy flags
-                    # Retry multiple times to catch threads that finish between checks
                     busy_retries = 0
                     max_busy_retries = 20  # Wait up to 20ms for threads to finish
                     while self.has_busy_workers() and busy_retries < max_busy_retries:
@@ -601,7 +654,6 @@ class WorkerPool:
                         busy_retries += 1
                     
                     # After retries, check if we should exit
-                    # Exit if: no busy workers OR we've waited long enough and all items are completed
                     should_exit = (not self.has_busy_workers() or 
                                   (busy_retries >= max_busy_retries and actual_processed >= total_items))
                     
@@ -625,27 +677,28 @@ class WorkerPool:
         total_completed = sum(worker.completed for worker in self.workers)
         total_failed = sum(worker.failed for worker in self.workers)
         
-        # Clean up worker progress tasks
-        for worker in self.workers:
-            if hasattr(worker, 'progress_task_id') and worker.progress_task_id is not None:
-                worker_progress.remove_task(worker.progress_task_id)
-                worker.progress_task_id = None
+        # Clean up worker progress
+        progress_manager.cleanup_workers()
         
         logger.info(f'Processing complete: {total_completed} successful, {total_failed} failed')
     
-    def _update_worker_progress(self, worker, progress_percent, current_duration, total_duration, speed=None, 
-                               remaining_time=None, frame=0, fps=0, q=0, size=0, time_str="00:00:00.00", bitrate=0, media_file=None):
+    def _update_worker_progress(self, worker, progress_percent, current_duration, total_duration, speed=None,
+                               remaining_time=None, frame=0, fps=0, q=0, size=0, time_str="00:00:00.00", bitrate=0, media_file=None, failed=False, error_message=None):
         """Update worker progress data from callback."""
         # Use thread-safe updates to prevent race conditions
         with self._progress_lock:
             worker.progress_percent = progress_percent
             worker.current_duration = current_duration
             worker.total_duration = total_duration
+            if failed:
+                worker.failed_state = True
+                if error_message:
+                    worker.error_message = error_message
             if speed:
                 worker.speed = speed
             if remaining_time is not None:
                 worker.remaining_time = remaining_time
-            
+
             # Store media file path if provided
             if media_file:
                 worker.media_file = media_file

@@ -20,6 +20,11 @@
   - [Command-line Arguments](#command-line-arguments)
   - [Environment Variables](#environment-variables)
 - [GPU Support](#gpu-support)
+- [Web Interface](#web-interface)
+  - [Starting the Web Interface](#starting-the-web-interface)
+  - [Web Interface Features](#web-interface-features)
+  - [Web Interface Configuration](#web-interface-configuration)
+  - [First-Time Setup](#first-time-setup)
 - [Usage Examples](#usage-examples)
 - [Troubleshooting](#troubleshooting)
 - [FAQ](#faq)
@@ -82,9 +87,11 @@ plex-generate-previews \
 - **Parallel Processing**: Configurable GPU and CPU worker threads
 - **Hardware Acceleration**: CUDA, VAAPI, and D3D11VA
 - **Library Filtering**: Process specific Plex libraries
+- **Auto-Analysis**: Automatically triggers Plex analysis for items missing bundle hashes to ensure they can be processed
 - **Quality Control**: Adjustable thumbnail quality (1-10)
 - **Docker Support**: Pre-built images with GPU acceleration
 - **Command-line Interface**: CLI arguments and environment variables
+- **Web Interface**: Browser-based dashboard with real-time progress tracking, queue management, and error logging
 
 ## Requirements
 
@@ -335,6 +342,8 @@ For detailed configuration options, see the complete reference tables below:
 | `CPU_THREADS` | `--cpu-threads` | Number of CPU worker threads (0-32) | 4 |
 | `GPU_SELECTION` | `--gpu-selection` | GPU selection: "all" or "0,1,2" | "all" |
 | `THUMBNAIL_QUALITY` | `--thumbnail-quality` | Preview quality 1-10 (2=highest, 10=lowest) | 4 |
+| `PLEX_VIDEOS_PATH_MAPPING` | `--plex-videos-path-mapping` | Plex videos path prefix | None |
+| `PLEX_PATH_MAPPINGS` | N/A | Multiple path mappings (JSON or string pairs) | None |
 | `PLEX_BIF_FRAME_INTERVAL` | `--plex-bif-frame-interval` | Interval between preview images (1-60 seconds) | 5 |
 | `REGENERATE_THUMBNAILS` | `--regenerate-thumbnails` | Regenerate existing thumbnails | false |
 | `TMP_FOLDER` | `--tmp-folder` | Temporary folder for processing | System temp dir |
@@ -413,11 +422,13 @@ docker run --rm --gpus all \
 --plex-local-videos-path-mapping "/media"
 ```
 
-**Example 4: Multiple Path Mappings**
+**Example 4: Multiple Path Mappings (Advanced)**
 ```bash
-# If you have multiple different path structures
---plex-videos-path-mapping "/server/media,/mnt/media" \
---plex-local-videos-path-mapping "/media,/media"
+# Use PLEX_PATH_MAPPINGS environment variable for multiple mappings
+# Format: JSON list of pairs OR semicolon-separated pairs
+export PLEX_PATH_MAPPINGS='/server/media,/media;/mnt/other,/other'
+# JSON format also works:
+# export PLEX_PATH_MAPPINGS='[["/server/media", "/media"], ["/mnt/other", "/other"]]'
 ```
 
 **How to Find Your Path Mappings:**
@@ -546,6 +557,99 @@ services:
     devices:
       - /dev/dri:/dev/dri
 ```
+
+## Web Interface
+
+The tool includes a built-in web interface for easier management and monitoring of thumbnail generation. The web interface runs on port 8008 and provides a dashboard with real-time progress tracking.
+
+### Starting the Web Interface
+
+**Docker:**
+```bash
+docker run -d --name plex-previews-web \
+  --gpus all \
+  -p 8008:8008 \
+  -e MODE=web \
+  -e PLEX_URL=http://localhost:32400 \
+  -e PLEX_TOKEN=your-token \
+  -e PLEX_CONFIG_FOLDER=/config/plex/Library/Application\ Support/Plex\ Media\ Server \
+  -v /path/to/plex/config:/config/plex \
+  -v /path/to/media:/media \
+  -v /path/to/db:/app \
+  stevezzau/plex_generate_vid_previews:latest
+```
+
+**Local Installation:**
+```bash
+# Install and run
+pip install git+https://github.com/stevezau/plex_generate_vid_previews.git
+plex-previews-web
+
+# Or with Python module
+python -m plex_generate_previews.web.main
+```
+
+Then access the web interface at `http://localhost:8008`
+
+### Web Interface Features
+
+#### Dashboard
+- **Real-time Statistics**: View total items, completed, processing, queued, and missing previews
+- **Library Filtering**: Filter items by Plex library
+- **Status Filtering**: Filter by processing status (missing, queued, processing, completed, failed)
+- **Search**: Search items by title
+- **Bulk Actions**: Select multiple items to reset or mark as completed
+
+#### Queue Management
+- **Pause/Resume**: Control the processing queue
+- **Priority Control**: Move items to the top of the queue
+- **Force Sync**: Manually trigger library synchronization with Plex
+- **Regenerate**: Force regeneration of existing previews
+
+#### Error Logging and Details
+- **Expandable Rows**: Click the ▶ arrow next to any item to view additional details
+- **Failed Items**: View detailed error messages for items that failed to process
+  - Error messages are captured and stored in the database
+  - Red-highlighted error box shows the full failure reason
+- **Completed Items**: View BIF file locations and media paths
+  - BIF file path: Shows where the generated preview file is stored
+  - Media path: Shows the source video file location
+- **Processing Items**: View the current media file being processed
+
+#### Scheduler
+- **Automated Processing**: Background scheduler automatically processes items
+- **Configurable Intervals**: Set how often the scheduler checks for new items
+- **Auto-sync**: Automatically syncs with Plex library to discover new media
+
+### Web Interface Configuration
+
+The web interface uses the same configuration as the CLI tool, plus these additional settings:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `MODE` | Set to "web" to run web interface instead of CLI | CLI mode |
+| `ADMIN_PASSWORD` | Web interface admin password | "admin" |
+| `DB_PATH` | Path to SQLite database file | "plex_previews.db" |
+| `SECRET_KEY` | Session secret key (auto-generated if not set) | Random |
+
+### First-Time Setup
+
+1. **Start the web interface** with the command above
+2. **Login** with default credentials (username: admin, password: admin)
+3. **Configure Plex** if using OAuth setup, or use environment variables
+4. **Change password** in Settings page (recommended)
+5. **Sync library** using the "Force Sync" button to populate the database
+6. **Monitor progress** as the scheduler automatically processes items
+
+### Screenshots and UI Details
+
+The web interface provides:
+- Dark theme optimized for media server environments
+- Responsive design that works on desktop and mobile
+- Real-time updates without page refresh
+- Pagination for large libraries
+- Sortable columns
+- Direct links to Plex web app for each item (when configured)
 
 ## Usage Examples
 
@@ -718,6 +822,12 @@ plex-generate-previews \
   - **Intel**: Add `--device=/dev/dri:/dev/dri --group-add 109`
   - Test with: `docker run --rm --gpus all nvidia/cuda:11.0-base nvidia-smi`
 
+#### "Skipping BIF with mismatched hash"
+
+- **Cause**: This error indicates a bug in the tool's previous versions. The tool was incorrectly validating BIF file paths by expecting the BIF filename to start with the same character as its parent directory. Plex's standard, and this tool's generation logic, uses the first character of the bundle hash for the directory name, and the *remaining* characters for the BIF filename.
+  - **Example**: For a full hash `e730b9ff...`, Plex creates the path `.../e/730b9ff...bundle`. The tool was incorrectly checking if `730b9ff...` starts with `e`, which would always fail.
+- **Solution**: This bug has been resolved in the latest version. The tool now correctly reconstructs the full bundle hash (by prepending the directory character to the filename) and processes the BIF file. If you encounter this message, ensure you are running the latest version of the tool.
+
 #### "Skipping as file not found"
 - **Cause**: Incorrect path mappings or missing media files
 - **Solution**:
@@ -770,6 +880,9 @@ A: Yes! Use `--plex-libraries "Movies, TV Shows"` to process only specific Plex 
 
 **Q: What's the difference between thumbnail quality 1-10?**
 A: Lower numbers = higher quality but larger file sizes. Quality 2 is highest quality, quality 10 is lowest quality.
+
+**Q: Can I force the tool to calculate the bundle hash if Plex is missing it?**
+A: No. The bundle hash isn't just a filename; it's the key Plex uses internally to locate the preview files. If Plex hasn't generated this hash (which happens during analysis), it doesn't know where to look for the previews, even if we generated them in the "correct" location. You *must* trigger analysis in Plex (using the "Analyze" button in this tool's Settings) so Plex generates the hash and knows where to find the files.
 
 ### Performance Questions
 

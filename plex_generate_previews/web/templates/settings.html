@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Settings - Plex Preview Gen</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <style>
+        body { background-color: #1a1a1a; color: #e5e5e5; }
+        [x-cloak] { display: none !important; }
+        .card { background-color: #2d2d2d; border-radius: 0.5rem; padding: 1.5rem; }
+    </style>
+</head>
+<body class="container mx-auto p-6" x-data="settings()">
+    <nav class="flex justify-between items-center mb-8">
+        <div class="flex items-center space-x-4">
+            <a href="/" class="text-gray-400 hover:text-white">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path></svg>
+            </a>
+            <h1 class="text-2xl font-bold text-orange-500">Settings</h1>
+        </div>
+        <div>
+            <span class="mr-4 text-gray-400">User: {{ user }}</span>
+            <a href="/logout" class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded text-sm">Logout</a>
+        </div>
+    </nav>
+
+    <div class="max-w-2xl mx-auto space-y-6">
+        
+        <!-- Worker Configuration -->
+        <div class="card">
+            <h2 class="text-xl font-bold mb-4 pb-2 border-b border-gray-700">Performance</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                    <label class="block text-gray-400 text-sm font-bold mb-2">GPU Threads</label>
+                    <input type="number" x-model="config.gpu_threads" class="w-full bg-gray-700 text-white p-2 rounded border border-gray-600 focus:border-orange-500 focus:outline-none">
+                    <p class="text-xs text-gray-500 mt-1">Number of concurrent GPU tasks.</p>
+                </div>
+                <div>
+                    <label class="block text-gray-400 text-sm font-bold mb-2">CPU Threads</label>
+                    <input type="number" x-model="config.cpu_threads" class="w-full bg-gray-700 text-white p-2 rounded border border-gray-600 focus:border-orange-500 focus:outline-none">
+                    <p class="text-xs text-gray-500 mt-1">Number of concurrent CPU tasks (fallback).</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Security -->
+        <div class="card">
+            <h2 class="text-xl font-bold mb-4 pb-2 border-b border-gray-700">Security</h2>
+            <div>
+                <label class="block text-gray-400 text-sm font-bold mb-2">New Admin Password</label>
+                <input
+                    type="password"
+                    x-model="newPassword"
+                    @input="checkPasswordLength()"
+                    maxlength="72"
+                    placeholder="Leave blank to keep current"
+                    class="w-full bg-gray-700 text-white p-2 rounded border border-gray-600 focus:border-orange-500 focus:outline-none"
+                    :class="{ 'border-yellow-500': passwordWarning }">
+                <p class="text-xs mt-1" :class="passwordWarning ? 'text-yellow-400' : 'text-gray-500'">
+                    <span x-show="!passwordWarning">Overrides the environment variable password. Max 72 characters.</span>
+                    <span x-show="passwordWarning">⚠️ Password will be truncated to 72 characters for security compatibility.</span>
+                </p>
+            </div>
+        </div>
+
+        <!-- Maintenance -->
+        <div class="card border border-blue-900 bg-blue-900/10">
+            <h2 class="text-xl font-bold mb-4 pb-2 border-b border-blue-900 text-blue-400">Maintenance</h2>
+            <div class="space-y-4">
+                <!-- Discover Existing BIFs -->
+                <div class="flex justify-between items-center pb-4 border-b border-blue-800">
+                    <div>
+                        <h3 class="font-bold text-blue-300">Discover Existing BIFs</h3>
+                        <p class="text-sm text-gray-400">Scans MISSING items to find pre-existing BIF files and marks them as COMPLETED (no regeneration needed).</p>
+                    </div>
+                    <button @click="discoverExisting" :disabled="discovering" class="bg-green-600 hover:bg-green-700 disabled:bg-gray-600 text-white font-bold py-2 px-4 rounded transition flex items-center">
+                        <span x-show="!discovering">Scan Missing</span>
+                        <span x-show="discovering" class="flex items-center">
+                            <span class="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full mr-2"></span>
+                            Scanning...
+                        </span>
+                    </button>
+                </div>
+                <div x-show="discoverResult" x-transition class="p-3 rounded bg-green-900/30 text-green-200" x-text="discoverResult"></div>
+
+                <!-- Verify Completed -->
+                <div class="flex justify-between items-center pt-4">
+                    <div>
+                        <h3 class="font-bold text-blue-300">Verify Completed Items</h3>
+                        <p class="text-sm text-gray-400">Scans all completed items to verify BIF files exist. Moves items with missing BIFs back to MISSING status.</p>
+                    </div>
+                    <div class="flex space-x-2">
+                        <button @click="debugVerify" class="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-3 rounded transition text-sm">
+                            Debug
+                        </button>
+                        <button @click="verifyCompleted" :disabled="verifying" class="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white font-bold py-2 px-4 rounded transition flex items-center">
+                            <span x-show="!verifying">Verify Now</span>
+                            <span x-show="verifying" class="flex items-center">
+                                <span class="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full mr-2"></span>
+                                Verifying...
+                            </span>
+                        </button>
+                    </div>
+                </div>
+                <div x-show="verifyResult" x-transition class="p-3 rounded bg-blue-900/30 text-blue-200" x-text="verifyResult"></div>
+            </div>
+        </div>
+
+        <!-- Missing Hashes -->
+        <div class="card" x-show="missingHashes.total > 0 || missingHashes.loading || missingHashes.search.length > 0" x-cloak>
+            <div class="flex justify-between items-center mb-4 pb-2 border-b border-gray-700">
+                <h2 class="text-xl font-bold text-yellow-500">All Media Items with Bundle Hash Status</h2>
+                <span class="bg-yellow-900 text-yellow-200 text-xs px-2 py-1 rounded" x-text="missingHashes.total + ' items'"></span>
+            </div>
+            
+            <p class="text-sm text-gray-400 mb-4">
+                This table shows all media items. Items marked "Yes" under "Missing" indicate that Plex has not provided a bundle hash, preventing preview generation. The system will automatically try to trigger analysis for these items during the next scan.
+            </p>
+
+            <div class="mb-4">
+                <input 
+                    type="text" 
+                    x-model="missingHashes.search" 
+                    @input.debounce.500ms="fetchMissingHashes(1)"
+                    placeholder="Search missing items..." 
+                    class="w-full bg-gray-700 text-white p-2 rounded border border-gray-600 focus:border-yellow-500 focus:outline-none text-sm"
+                >
+            </div>
+
+            <div class="overflow-x-auto">
+                <table class="w-full text-left text-sm text-gray-400">
+                    <thead class="bg-gray-800 text-gray-200 uppercase font-medium">
+                        <tr>
+                            <th class="px-4 py-2">ID</th>
+                            <th class="px-4 py-2">Title</th>
+                            <th class="px-4 py-2">Library</th>
+                            <th class="px-4 py-2">Added</th>
+                            <th class="px-4 py-2">Missing</th>
+                            <th class="px-4 py-2">Current Hash</th>
+                            <th class="px-4 py-2">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-gray-700">
+                        <template x-for="item in missingHashes.items" :key="item.id">
+                            <tr class="hover:bg-gray-700/50">
+                                <td class="px-4 py-2 font-mono text-xs" x-text="item.id"></td>
+                                <td class="px-4 py-2 font-medium text-white" x-text="item.title"></td>
+                                <td class="px-4 py-2" x-text="item.library_name"></td>
+                                <td class="px-4 py-2" x-text="new Date(item.added_at).toLocaleDateString()"></td>
+                                <td class="px-4 py-2">
+                                    <span :class="item.is_bundle_hash_missing ? 'text-red-400' : 'text-green-400'" x-text="item.is_bundle_hash_missing ? 'Yes' : 'No'"></span>
+                                </td>
+                                <td class="px-4 py-2 font-mono text-xs break-all max-w-xs">
+                                    <span :class="item.bundle_hash ? 'text-gray-300' : 'text-gray-600 italic'" x-text="item.bundle_hash || '(none)'"></span>
+                                </td>
+                                <td class="px-4 py-2">
+                                    <button @click="analyzeItem(item.id)" class="bg-blue-600 hover:bg-blue-700 text-white text-xs px-2 py-1 rounded transition mr-1">
+                                        Analyze
+                                    </button>
+                                    <button @click="logDebugJson(item.id)" class="bg-gray-600 hover:bg-gray-700 text-white text-xs px-2 py-1 rounded transition mr-1" title="Log debug JSON to server console">
+                                        JSON
+                                    </button>
+                                    <button @click="forceHashCalc(item.id)" class="bg-purple-600 hover:bg-purple-700 text-white text-xs px-2 py-1 rounded transition" title="Manually calculate and set hash">
+                                        Force Hash
+                                    </button>
+                                </td>
+                            </tr>
+                        </template>
+                        <tr x-show="missingHashes.items.length === 0 && !missingHashes.loading">
+                            <td colspan="7" class="px-4 py-4 text-center text-gray-500">No items found.</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Pagination -->
+            <div class="flex justify-between items-center mt-4" x-show="missingHashes.pages > 1">
+                <button 
+                    @click="fetchMissingHashes(missingHashes.page - 1)" 
+                    :disabled="missingHashes.page <= 1"
+                    class="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded disabled:opacity-50 disabled:cursor-not-allowed text-xs">
+                    Previous
+                </button>
+                <span class="text-xs text-gray-500">
+                    Page <span x-text="missingHashes.page"></span> of <span x-text="missingHashes.pages"></span>
+                </span>
+                <button 
+                    @click="fetchMissingHashes(missingHashes.page + 1)" 
+                    :disabled="missingHashes.page >= missingHashes.pages"
+                    class="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded disabled:opacity-50 disabled:cursor-not-allowed text-xs">
+                    Next
+                </button>
+            </div>
+        </div>
+
+        <!-- Danger Zone -->
+        <div class="card border border-red-900 bg-red-900/10">
+            <h2 class="text-xl font-bold mb-4 pb-2 border-b border-red-900 text-red-500">Danger Zone</h2>
+            <div class="flex justify-between items-center">
+                <div>
+                    <h3 class="font-bold text-red-400">Reset Library Database</h3>
+                    <p class="text-sm text-gray-400">Deletes all local media records and triggers a full resync from Plex.</p>
+                </div>
+                <button @click="resetLibrary" class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded transition">
+                    Reset & Resync
+                </button>
+            </div>
+        </div>
+
+        <!-- Actions -->
+        <div class="flex justify-end space-x-4">
+            <button @click="saveSettings" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-6 rounded transition flex items-center">
+                <span x-show="!saving">Save Changes</span>
+                <span x-show="saving" class="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full mr-2"></span>
+                <span x-show="saving">Saving...</span>
+            </button>
+        </div>
+        
+        <div x-show="message" x-transition class="p-4 rounded" :class="isError ? 'bg-red-900 text-red-200' : 'bg-green-900 text-green-200'" x-text="message"></div>
+
+    </div>
+
+    <script>
+        function settings() {
+            return {
+                config: { gpu_threads: 1, cpu_threads: 1 },
+                newPassword: '',
+                passwordWarning: false,
+                saving: false,
+                message: '',
+                isError: false,
+                discovering: false,
+                discoverResult: '',
+                verifying: false,
+                verifyResult: '',
+                missingHashes: {
+                    items: [],
+                    total: 0,
+                    page: 1,
+                    pages: 1,
+                    loading: false,
+                    search: ''
+                },
+
+                async init() {
+                    try {
+                        const res = await fetch('/api/settings');
+                        this.config = await res.json();
+                        this.fetchMissingHashes();
+                    } catch (e) { console.error(e); }
+                },
+
+                async fetchMissingHashes(page = 1) {
+                    this.missingHashes.loading = true;
+                    try {
+                        let url = `/api/items/all-with-hash-status?page=${page}`;
+                        if (this.missingHashes.search) {
+                            url += `&search=${encodeURIComponent(this.missingHashes.search)}`;
+                        }
+                        const res = await fetch(url);
+                        const data = await res.json();
+                        this.missingHashes.items = data.items;
+                        this.missingHashes.total = data.total;
+                        this.missingHashes.page = data.page;
+                        this.missingHashes.pages = data.pages;
+                    } catch (e) {
+                        console.error("Error fetching missing hashes:", e);
+                    } finally {
+                        this.missingHashes.loading = false;
+                    }
+                },
+
+                async analyzeItem(itemId) {
+                    try {
+                        const res = await fetch(`/api/items/${itemId}/analyze`, { method: 'POST' });
+                        if (res.ok) {
+                            alert('Analysis triggered. The item should update shortly.');
+                            this.fetchMissingHashes(this.missingHashes.page);
+                        } else {
+                            const data = await res.json();
+                            alert('Failed: ' + (data.detail || 'Unknown error'));
+                        }
+                    } catch (e) {
+                        alert('Error: ' + e.message);
+                    }
+                },
+
+                async logDebugJson(itemId) {
+                    try {
+                        const res = await fetch(`/api/items/${itemId}/log-debug-json`, { method: 'POST' });
+                        if (res.ok) {
+                            alert('JSON logged to server console.');
+                        } else {
+                            const data = await res.json();
+                            alert('Failed: ' + (data.detail || 'Unknown error'));
+                        }
+                    } catch (e) {
+                        alert('Error: ' + e.message);
+                    }
+                },
+
+                async forceHashCalc(itemId) {
+                    if (!confirm('Warning: This manually calculates the hash based on the file path. If incorrect, Plex will not see the generated previews. Are you sure?')) {
+                        return;
+                    }
+                    try {
+                        const res = await fetch(`/api/items/${itemId}/force-hash-calc`, { method: 'POST' });
+                        const data = await res.json();
+                        if (res.ok) {
+                            alert(`Success! Calculated hash: ${data.hash}\nItem updated.`);
+                            this.fetchMissingHashes(this.missingHashes.page);
+                        } else {
+                            alert('Failed: ' + (data.detail || 'Unknown error'));
+                        }
+                    } catch (e) {
+                        alert('Error: ' + e.message);
+                    }
+                },
+
+                checkPasswordLength() {
+                    // Check if password exceeds 72 bytes in UTF-8
+                    const byteLength = new TextEncoder().encode(this.newPassword).length;
+                    this.passwordWarning = byteLength > 72;
+                },
+                
+                async saveSettings() {
+                    this.saving = true;
+                    this.message = '';
+                    this.isError = false;
+
+                    try {
+                        const payload = {
+                            gpu_threads: this.config.gpu_threads,
+                            cpu_threads: this.config.cpu_threads,
+                            new_password: this.newPassword
+                        };
+
+                        const res = await fetch('/api/settings', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify(payload)
+                        });
+
+                        if (res.ok) {
+                            this.message = 'Settings saved successfully. Worker pool restarting...';
+                            this.newPassword = ''; // Clear password field
+                            this.passwordWarning = false; // Clear warning
+                        } else {
+                            const errorData = await res.json().catch(() => ({ detail: 'Failed to save settings' }));
+                            this.message = errorData.detail || 'Failed to save settings.';
+                            this.isError = true;
+                        }
+                    } catch (e) {
+                        this.message = 'Error saving settings: ' + e.message;
+                        this.isError = true;
+                    } finally {
+                        this.saving = false;
+                        setTimeout(() => this.message = '', 5000);
+                    }
+                },
+                
+                async discoverExisting(confirmed = false) {
+                    this.discovering = true;
+                    this.discoverResult = '';
+
+                    try {
+                        const res = await fetch('/api/settings/discover-existing-bifs', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({ confirm: confirmed })
+                        });
+                        const data = await res.json();
+
+                        if (res.ok) {
+                            // Check if confirmation is required
+                            if (data.requires_confirmation) {
+                                // Show sample paths for debugging
+                                let debugInfo = '';
+                                if (data.sample_paths && data.sample_paths.length > 0) {
+                                    debugInfo = '\n\nSample BIF paths found:\n' + data.sample_paths.join('\n');
+                                }
+
+                                const confirmMsg = `✓ GOOD NEWS: ${data.percentage.toFixed(1)}% of MISSING items (${data.would_move}/${data.scanned}) have existing BIF files!\n\nDo you want to mark them as COMPLETED?${debugInfo}`;
+
+                                if (confirm(confirmMsg)) {
+                                    // User confirmed, retry with confirmation flag
+                                    this.discoverExisting(true);
+                                    return;
+                                } else {
+                                    this.discoverResult = 'ℹ️ Discovery cancelled. No items were marked as COMPLETED.';
+                                    setTimeout(() => this.discoverResult = '', 10000);
+                                }
+                            } else {
+                                // Normal success
+                                this.discoverResult = `✓ ${data.message}`;
+                                // Auto-hide after 10 seconds
+                                setTimeout(() => this.discoverResult = '', 10000);
+                            }
+                        } else {
+                            this.discoverResult = `✗ Error: ${data.detail || 'Failed to discover BIFs'}`;
+                        }
+                    } catch (e) {
+                        this.discoverResult = `✗ Error: ${e.message}`;
+                    } finally {
+                        this.discovering = false;
+                    }
+                },
+
+                async debugVerify() {
+                    this.verifyResult = 'Loading debug info...';
+                    try {
+                        const res = await fetch('/api/settings/verify-debug');
+                        const data = await res.json();
+
+                        if (res.ok) {
+                            let msg = `Debug Info:\n`;
+                            msg += `Config folder: ${data.config_folder}\n`;
+                            if (data.sample_item) {
+                                msg += `\nSample item: ${data.sample_item.title}\n`;
+                                msg += `Bundle hash: ${data.sample_item.bundle_hash}\n`;
+                                msg += `Expected BIF path: ${data.bif_path}\n`;
+                                msg += `BIF exists: ${data.bif_exists}\n`;
+                                msg += `Parent dir exists: ${data.parent_dir_exists}\n`;
+                                if (!data.bif_exists && data.parent_dir_exists) {
+                                    msg += `\n⚠️ Parent directory exists but BIF file is missing`;
+                                } else if (!data.parent_dir_exists) {
+                                    msg += `\n⚠️ Parent directory doesn't exist - check config folder path`;
+                                }
+                            }
+                            alert(msg);
+                            this.verifyResult = '';
+                        } else {
+                            this.verifyResult = `Debug failed: ${data.detail || 'Unknown error'}`;
+                        }
+                    } catch (e) {
+                        this.verifyResult = `Debug error: ${e.message}`;
+                    }
+                },
+
+                async verifyCompleted(confirmed = false) {
+                    this.verifying = true;
+                    this.verifyResult = '';
+
+                    try {
+                        const res = await fetch('/api/settings/verify-completed', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({ confirm: confirmed })
+                        });
+                        const data = await res.json();
+
+                        if (res.ok) {
+                            // Check if confirmation is required
+                            if (data.requires_confirmation) {
+                                // Show sample paths for debugging
+                                let debugInfo = '';
+                                if (data.sample_paths && data.sample_paths.length > 0) {
+                                    debugInfo = '\n\nSample BIF paths being checked:\n' + data.sample_paths.join('\n');
+                                }
+
+                                const confirmMsg = `⚠️ WARNING: ${data.percentage.toFixed(1)}% of items (${data.would_move}/${data.verified}) would be moved to MISSING status.\n\nThis might indicate:\n- Incorrect Plex config folder path\n- BIF files stored in a different location\n- Database out of sync\n\nDo you want to proceed anyway?${debugInfo}`;
+
+                                if (confirm(confirmMsg)) {
+                                    // User confirmed, retry with confirmation flag
+                                    this.verifyCompleted(true);
+                                    return;
+                                } else {
+                                    this.verifyResult = '⚠️ Verification cancelled. No items were moved.';
+                                    setTimeout(() => this.verifyResult = '', 10000);
+                                }
+                            } else {
+                                // Normal success
+                                this.verifyResult = `✓ ${data.message}`;
+                                // Auto-hide after 10 seconds
+                                setTimeout(() => this.verifyResult = '', 10000);
+                            }
+                        } else {
+                            this.verifyResult = `✗ Error: ${data.detail || 'Failed to verify items'}`;
+                        }
+                    } catch (e) {
+                        this.verifyResult = `✗ Error: ${e.message}`;
+                    } finally {
+                        this.verifying = false;
+                    }
+                },
+
+                async resetLibrary() {
+                    if (!confirm('Are you sure you want to reset the library? This will clear all local status and re-fetch everything from Plex.')) {
+                        return;
+                    }
+
+                    try {
+                        const res = await fetch('/api/settings/reset-library', { method: 'POST' });
+                        if (res.ok) {
+                            alert('Library reset initiated. Redirecting to dashboard...');
+                            window.location.href = '/';
+                        } else {
+                            alert('Failed to reset library.');
+                        }
+                    } catch (e) {
+                        alert('Error: ' + e.message);
+                    }
+                }
+            }
+        }
+    </script>
+</body>
+</html>

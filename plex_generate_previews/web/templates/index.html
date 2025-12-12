@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - Plex Preview Gen</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <style>
+        body { background-color: #1a1a1a; color: #e5e5e5; }
+        [x-cloak] { display: none !important; }
+        .card { background-color: #2d2d2d; border-radius: 0.5rem; padding: 1.5rem; }
+    </style>
+</head>
+<body class="container mx-auto p-6" x-data="dashboard()">
+    <nav class="flex justify-between items-center mb-8">
+        <h1 class="text-2xl font-bold text-orange-500">Plex Preview Generator</h1>
+        <div>
+            <span class="mr-4 text-gray-400">User: {{ user }}</span>
+            <a href="/settings" class="bg-gray-700 hover:bg-gray-600 text-white px-4 py-2 rounded text-sm mr-2">Settings</a>
+            <a href="/logout" class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded text-sm">Logout</a>
+        </div>
+    </nav>
+
+    <!-- Stats Grid -->
+    <div class="grid grid-cols-1 md:grid-cols-5 gap-4 mb-8">
+        <div class="card border-l-4 border-blue-500">
+            <h3 class="text-gray-400 text-sm">Total Items</h3>
+            <p class="text-2xl font-bold" x-text="stats.total">0</p>
+        </div>
+        <div class="card border-l-4 border-green-500">
+            <h3 class="text-gray-400 text-sm">Completed</h3>
+            <p class="text-2xl font-bold" x-text="stats.completed">0</p>
+        </div>
+        <div class="card border-l-4 border-yellow-500">
+            <h3 class="text-gray-400 text-sm">Processing</h3>
+            <p class="text-2xl font-bold" x-text="stats.processing">0</p>
+        </div>
+        <div class="card border-l-4 border-orange-500">
+            <h3 class="text-gray-400 text-sm">Queued</h3>
+            <p class="text-2xl font-bold" x-text="stats.queued">0</p>
+        </div>
+        <div class="card border-l-4 border-red-500">
+            <h3 class="text-gray-400 text-sm">Missing</h3>
+            <p class="text-2xl font-bold" x-text="stats.missing">0</p>
+        </div>
+    </div>
+
+    <!-- Actions -->
+    <div class="mb-6 flex space-x-4">
+        <button @click="togglePause" class="px-4 py-2 rounded text-white font-bold transition" :class="paused ? 'bg-green-600 hover:bg-green-700' : 'bg-yellow-600 hover:bg-yellow-700'">
+            <span x-text="paused ? '▶ Resume Queue' : '⏸ Pause Queue'"></span>
+        </button>
+        <button @click="triggerSync" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded">Force Sync</button>
+        <button @click="fetchItems" class="bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded">Refresh List</button>
+    </div>
+
+    <!-- Library Selector -->
+    <div class="mb-6">
+        <label for="library-select" class="block text-gray-400 text-sm font-bold mb-2">Select Library:</label>
+        <select id="library-select" x-model="selectedLibrary" @change="page=1; fetchItems()" class="w-full md:w-1/3 bg-gray-700 text-white p-2 rounded border border-gray-600 focus:border-orange-500 focus:outline-none">
+            <option value="">All Libraries</option>
+            <template x-for="library in libraries" :key="library">
+                <option :value="library" x-text="library"></option>
+            </template>
+        </select>
+    </div>
+
+    <!-- Items Table -->
+    <div class="card overflow-hidden">
+        <!-- Bulk Actions Bar -->
+        <div x-show="selectedIds.length > 0" class="mb-4 p-3 bg-gray-800 rounded border border-gray-600 flex justify-between items-center">
+            <div class="text-sm text-gray-300">
+                <span x-text="selectedIds.length"></span> item(s) selected
+            </div>
+            <div class="flex space-x-2">
+                <button @click="bulkAction('reset')" class="text-xs bg-red-900/50 hover:bg-red-900 text-red-200 px-3 py-2 rounded font-bold">
+                    ⟳ Reset to Missing
+                </button>
+                <button @click="bulkAction('mark_completed')" class="text-xs bg-green-900/50 hover:bg-green-900 text-green-200 px-3 py-2 rounded font-bold">
+                    ✓ Mark as Completed
+                </button>
+                <button @click="clearSelection" class="text-xs bg-gray-700 hover:bg-gray-600 text-white px-3 py-2 rounded">
+                    Clear Selection
+                </button>
+            </div>
+        </div>
+
+        <div class="flex flex-col md:flex-row justify-between mb-4 space-y-2 md:space-y-0">
+            <h2 class="text-xl font-bold">Media Items</h2>
+            <div class="flex flex-wrap gap-2">
+                <input type="text" x-model="search" @input.debounce.500ms="page=1; fetchItems()" placeholder="Search title..." class="bg-gray-700 text-white p-2 rounded border border-gray-600 focus:border-orange-500 focus:outline-none">
+                <select x-model="filterStatus" @change="page=1; fetchItems()" class="bg-gray-700 text-white p-2 rounded border border-gray-600 focus:border-orange-500 focus:outline-none">
+                    <option value="">All Status</option>
+                    <option value="missing">Missing</option>
+                    <option value="queued">Queued</option>
+                    <option value="processing">Processing</option>
+                    <option value="completed">Completed</option>
+                    <option value="failed">Failed</option>
+                </select>
+                <label class="flex items-center bg-gray-700 px-3 py-2 rounded border border-gray-600 cursor-pointer hover:bg-gray-600 transition">
+                    <input type="checkbox" x-model="hideCompleted" @change="page=1; fetchItems()" class="mr-2">
+                    <span class="text-white text-sm">Hide Completed</span>
+                </label>
+            </div>
+        </div>
+        <div class="overflow-x-auto">
+            <table class="w-full text-left">
+                <thead>
+                    <tr class="text-gray-400 border-b border-gray-700">
+                        <th class="pb-2 pl-2 w-10">
+                            <input type="checkbox" @change="toggleSelectAll" :checked="allSelected" class="cursor-pointer">
+                        </th>
+                        <th class="pb-2 w-8"></th>
+                        <th class="pb-2 pl-2">Title</th>
+                        <th class="pb-2">Type</th>
+                        <th class="pb-2">Library</th>
+                        <th class="pb-2">Added</th>
+                        <th class="pb-2">Status</th>
+                        <th class="pb-2">Progress</th>
+                        <th class="pb-2">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <template x-for="item in items" :key="item.id">
+                        <>
+                        <tr class="border-b border-gray-800 hover:bg-gray-700 transition">
+                            <td class="py-3 pl-2">
+                                <input type="checkbox" :value="item.id" @change="toggleSelect(item.id)" :checked="selectedIds.includes(item.id)" class="cursor-pointer">
+                            </td>
+                            <td class="py-3 pl-2">
+                                <button @click="toggleExpand(item.id)" class="text-gray-400 hover:text-white transition">
+                                    <span x-show="!isExpanded(item.id)">▶</span>
+                                    <span x-show="isExpanded(item.id)">▼</span>
+                                </button>
+                            </td>
+                            <td class="py-3 pl-2 font-medium">
+                                <template x-if="plexClientIdentifier">
+                                    <a :href="plexWebUrl(item.id)" target="_blank" class="hover:text-orange-400 underline" x-text="item.title"></a>
+                                </template>
+                                <template x-if="!plexClientIdentifier">
+                                    <span class="text-gray-400" x-text="item.title" title="Plex server not configured - cannot link to app.plex.tv"></span>
+                                </template>
+                            </td>
+                            <td class="py-3 capitalize text-sm text-gray-400" x-text="item.media_type"></td>
+                            <td class="py-3 text-sm text-gray-400" x-text="item.library_name"></td>
+                            <td class="py-3 text-sm text-gray-400" x-text="formatDate(item.added_at)"></td>
+                            <td class="py-3">
+                                <span :class="{
+                                    'text-green-500': item.status === 'completed',
+                                    'text-yellow-500': item.status === 'processing',
+                                    'text-orange-500': item.status === 'queued',
+                                    'text-red-500': item.status === 'missing',
+                                    'text-red-700': item.status === 'failed'
+                                }" x-text="item.status" class="uppercase text-xs font-bold bg-gray-900 px-2 py-1 rounded"></span>
+                            </td>
+                            <td class="py-3 pr-2">
+                                <div class="w-24 bg-gray-600 rounded-full h-2.5 relative overflow-hidden">
+                                    <div class="bg-blue-600 h-2.5 rounded-full transition-all duration-500" :style="'width: ' + item.progress + '%'"></div>
+                                </div>
+                                <span class="text-xs text-gray-400 mt-1 block" x-text="item.progress + '%'"></span>
+                            </td>
+                            <td class="py-3">
+                                <div class="flex space-x-2">
+                                    <template x-if="item.status === 'queued' || item.status === 'missing'">
+                                        <button @click="moveItem(item.id, 'top')" class="text-xs bg-gray-700 hover:bg-gray-600 text-white px-2 py-1 rounded" title="Move to Top">
+                                            ▲ Top
+                                        </button>
+                                    </template>
+                                    <template x-if="item.status === 'processing'">
+                                        <button @click="moveItem(item.id, 'reset')" class="text-xs bg-red-900/50 hover:bg-red-900 text-red-200 px-2 py-1 rounded" title="Reset Stuck Item">
+                                            ⟳ Reset
+                                        </button>
+                                    </template>
+                                    <template x-if="item.status === 'failed'">
+                                        <button @click="resetToMissing(item.id)" class="text-xs bg-red-900/50 hover:bg-red-900 text-red-200 px-2 py-1 rounded" title="Reset to Missing">
+                                            ⟳ Reset
+                                        </button>
+                                    </template>
+                                    <template x-if="item.status === 'completed'">
+                                        <button @click="regenerateItem(item.id)" class="text-xs bg-blue-900/50 hover:bg-blue-900 text-blue-200 px-2 py-1 rounded" title="Regenerate Preview">
+                                            ⟳ Regen
+                                        </button>
+                                    </template>
+                                    <template x-if="item.status !== 'completed'">
+                                        <button @click="markCompleted(item.id)" class="text-xs bg-green-900/50 hover:bg-green-900 text-green-200 px-2 py-1 rounded" title="Mark as Completed">
+                                            ✓ Done
+                                        </button>
+                                    </template>
+                                </div>
+                            </td>
+                        </tr>
+                        <!-- Details Row -->
+                        <tr x-show="isExpanded(item.id)" class="bg-gray-800">
+                            <td colspan="9" class="py-4 px-6">
+                                <div class="space-y-2 text-sm">
+                                    <!-- For Failed Items -->
+                                    <template x-if="item.status === 'failed' && item.error_message">
+                                        <div class="bg-red-900/20 border border-red-700 rounded p-3">
+                                            <h4 class="font-bold text-red-400 mb-2">Error Details:</h4>
+                                            <p class="text-red-300 font-mono text-xs" x-text="item.error_message"></p>
+                                        </div>
+                                    </template>
+
+                                    <!-- For Completed Items -->
+                                    <template x-if="item.status === 'completed'">
+                                        <div class="space-y-2">
+                                            <div x-show="item.bif_path">
+                                                <span class="text-gray-400">BIF Location:</span>
+                                                <span class="text-gray-200 font-mono text-xs ml-2" x-text="item.bif_path"></span>
+                                            </div>
+                                            <div x-show="item.file_path">
+                                                <span class="text-gray-400">Media Path:</span>
+                                                <span class="text-gray-200 font-mono text-xs ml-2" x-text="item.file_path"></span>
+                                            </div>
+                                        </div>
+                                    </template>
+
+                                    <!-- For Other Statuses -->
+                                    <template x-if="item.status !== 'failed' && item.status !== 'completed'">
+                                        <div>
+                                            <div x-show="item.file_path">
+                                                <span class="text-gray-400">Media Path:</span>
+                                                <span class="text-gray-200 font-mono text-xs ml-2" x-text="item.file_path"></span>
+                                            </div>
+                                            <div x-show="!item.file_path" class="text-gray-500 italic">
+                                                No additional details available.
+                                            </div>
+                                        </div>
+                                    </template>
+                                </div>
+                            </td>
+                        </tr>
+                        </>
+                    </template>
+                    <tr x-show="items.length === 0">
+                        <td colspan="9" class="py-8 text-center text-gray-500">No items found matching your criteria.</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+        
+        <!-- Pagination -->
+        <div class="flex justify-between items-center mt-4 pt-4 border-t border-gray-700" x-show="totalPages > 1">
+            <span class="text-sm text-gray-400">
+                Showing page <span x-text="page" class="font-bold text-white"></span> of <span x-text="totalPages" class="font-bold text-white"></span>
+            </span>
+            <div class="flex space-x-2">
+                <button @click="page--; fetchItems()" :disabled="page <= 1" class="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded disabled:opacity-50 disabled:cursor-not-allowed text-sm">Previous</button>
+                <button @click="page++; fetchItems()" :disabled="page >= totalPages" class="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded disabled:opacity-50 disabled:cursor-not-allowed text-sm">Next</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function dashboard() {
+            return {
+                stats: { total: 0, completed: 0, processing: 0, queued: 0, missing: 0 },
+                items: [],
+                filterStatus: '',
+                search: '',
+                hideCompleted: false, // Filter to hide completed items
+                libraries: [],
+                selectedLibrary: '', // Stores the currently selected library name
+                page: 1,
+                limit: 20,
+                totalPages: 1,
+                paused: false,
+                plexClientIdentifier: '', // Store Plex server's client identifier
+                selectedIds: [], // Track selected item IDs
+                expandedRows: [], // Track which rows are expanded
+
+                get allSelected() {
+                    return this.items.length > 0 && this.selectedIds.length === this.items.length;
+                },
+
+                isExpanded(itemId) {
+                    return this.expandedRows.includes(itemId);
+                },
+
+                toggleExpand(itemId) {
+                    const index = this.expandedRows.indexOf(itemId);
+                    if (index > -1) {
+                        this.expandedRows.splice(index, 1);
+                    } else {
+                        this.expandedRows.push(itemId);
+                    }
+                },
+
+                init() {
+                    this.fetchStats();
+                    this.fetchItems();
+                    this.fetchQueueStatus();
+                    this.fetchLibraries(); // Fetch libraries on init
+                    this.fetchPlexClientIdentifier(); // Fetch Plex client identifier
+                    
+                    // Poll stats every 5 seconds
+                    setInterval(() => {
+                        this.fetchStats();
+                        this.fetchQueueStatus();
+                        // Only auto-refresh list if processing items exist or we are on page 1 without search
+                        // Otherwise it disturbs pagination/search
+                        if (this.stats.processing > 0) {
+                             this.fetchItems(true); // Silent refresh
+                        }
+                    }, 5000);
+                },
+                
+                formatDate(dateString) {
+                    if (!dateString) return '-';
+                    return new Date(dateString).toLocaleDateString(undefined, { 
+                        year: 'numeric', month: 'short', day: 'numeric' 
+                    });
+                },
+
+                async fetchPlexClientIdentifier() {
+                    try {
+                        console.log('Fetching Plex client identifier from /api/settings/plex-identifier');
+                        const res = await fetch('/api/settings/plex-identifier');
+                        if (res.ok) {
+                            const data = await res.json();
+                            this.plexClientIdentifier = data.plex_client_identifier;
+                            console.log('Plex client identifier loaded:', this.plexClientIdentifier);
+                        } else {
+                            console.warn("Plex client identifier not configured or accessible. Status:", res.status);
+                        }
+                    } catch (e) {
+                        console.error("Error fetching Plex client identifier:", e);
+                    }
+                },
+
+                plexWebUrl(ratingKey) {
+                    if (!this.plexClientIdentifier) {
+                        console.warn('Plex client identifier not available, cannot generate link for rating key:', ratingKey);
+                        return '#';
+                    }
+                    // Plex web app URL format
+                    // The key parameter needs to be URL-encoded: /library/metadata/{RATING_KEY} becomes %2Flibrary%2Fmetadata%2F{RATING_KEY}
+                    const encodedKey = encodeURIComponent(`/library/metadata/${ratingKey}`);
+                    const url = `https://app.plex.tv/desktop/#!/server/${this.plexClientIdentifier}/details?key=${encodedKey}`;
+                    console.log('Generated Plex URL for rating key', ratingKey, ':', url);
+                    return url;
+                },
+                
+                async fetchLibraries() {
+                    try {
+                        const res = await fetch('/api/libraries');
+                        this.libraries = await res.json();
+                    } catch (e) { console.error(e); }
+                },
+                
+                async fetchQueueStatus() {
+                    try {
+                        const res = await fetch('/api/queue/status');
+                        const data = await res.json();
+                        this.paused = data.paused;
+                    } catch (e) {}
+                },
+                
+                async togglePause() {
+                    const endpoint = this.paused ? '/api/queue/resume' : '/api/queue/pause';
+                    await fetch(endpoint, { method: 'POST' });
+                    this.fetchQueueStatus();
+                },
+                
+                async fetchStats() {
+                    try {
+                        const res = await fetch('/api/stats');
+                        this.stats = await res.json();
+                    } catch (e) { console.error(e); }
+                },
+                
+                async fetchItems(silent = false) {
+                    try {
+                        let url = `/api/items?page=${this.page}&limit=${this.limit}`;
+                        if (this.filterStatus) url += `&status=${this.filterStatus}`;
+                        if (this.search) url += `&search=${encodeURIComponent(this.search)}`;
+                        if (this.selectedLibrary) url += `&library_name=${encodeURIComponent(this.selectedLibrary)}`; // Add library filter
+                        if (this.hideCompleted) url += `&hide_completed=true`; // Add hide completed filter
+
+                        const res = await fetch(url);
+                        const data = await res.json();
+
+                        // Clear selection if items change (e.g., page change or filter)
+                        if (!silent) {
+                            this.clearSelection();
+                        }
+
+                        this.items = data.items;
+                        this.totalPages = data.pages;
+                    } catch (e) { console.error(e); }
+                },
+                
+                async triggerSync() {
+                    await fetch('/api/sync', { method: 'POST' });
+                    alert('Sync triggered!');
+                    this.fetchStats();
+                },
+
+                async moveItem(itemId, position) {
+                    try {
+                        const res = await fetch(`/api/items/${itemId}/move`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ position: position })
+                        });
+                        if (res.ok) {
+                            await this.fetchItems();
+                            await this.fetchStats();
+                        } else {
+                            console.error('Failed to move item:', await res.text());
+                        }
+                    } catch (e) {
+                        console.error('Error moving item:', e);
+                    }
+                },
+
+                async regenerateItem(itemId) {
+                    if (!confirm('Are you sure you want to regenerate previews for this item?')) {
+                        return;
+                    }
+                    try {
+                        const res = await fetch(`/api/items/${itemId}/regenerate`, {
+                            method: 'POST'
+                        });
+                        if (res.ok) {
+                            await this.fetchItems();
+                            await this.fetchStats();
+                        } else {
+                            console.error('Failed to regenerate item:', await res.text());
+                        }
+                    } catch (e) {
+                        console.error('Error regenerating item:', e);
+                    }
+                },
+
+                async markCompleted(itemId) {
+                    try {
+                        const res = await fetch(`/api/items/${itemId}/mark-completed`, {
+                            method: 'POST'
+                        });
+                        if (res.ok) {
+                            await this.fetchItems();
+                            await this.fetchStats();
+                        } else {
+                            console.error('Failed to mark item completed:', await res.text());
+                        }
+                    } catch (e) {
+                        console.error('Error marking item completed:', e);
+                    }
+                },
+
+                async resetToMissing(itemId) {
+                    try {
+                        const res = await fetch(`/api/items/${itemId}/reset-to-missing`, {
+                            method: 'POST'
+                        });
+                        if (res.ok) {
+                            await this.fetchItems();
+                            await this.fetchStats();
+                        } else {
+                            console.error('Failed to reset item:', await res.text());
+                        }
+                    } catch (e) {
+                        console.error('Error resetting item:', e);
+                    }
+                },
+
+                toggleSelect(itemId) {
+                    const index = this.selectedIds.indexOf(itemId);
+                    if (index > -1) {
+                        this.selectedIds.splice(index, 1);
+                    } else {
+                        this.selectedIds.push(itemId);
+                    }
+                },
+
+                toggleSelectAll() {
+                    if (this.allSelected) {
+                        this.selectedIds = [];
+                    } else {
+                        this.selectedIds = this.items.map(item => item.id);
+                    }
+                },
+
+                clearSelection() {
+                    this.selectedIds = [];
+                },
+
+                async bulkAction(action) {
+                    if (this.selectedIds.length === 0) {
+                        return;
+                    }
+
+                    const actionText = action === 'reset' ? 'reset to missing' : 'mark as completed';
+                    if (!confirm(`Are you sure you want to ${actionText} ${this.selectedIds.length} item(s)?`)) {
+                        return;
+                    }
+
+                    try {
+                        const res = await fetch('/api/items/bulk-action', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                item_ids: this.selectedIds,
+                                action: action
+                            })
+                        });
+
+                        if (res.ok) {
+                            const data = await res.json();
+                            alert(data.message);
+                            this.clearSelection();
+                            await this.fetchItems();
+                            await this.fetchStats();
+                        } else {
+                            console.error('Failed to perform bulk action:', await res.text());
+                            alert('Failed to perform bulk action');
+                        }
+                    } catch (e) {
+                        console.error('Error performing bulk action:', e);
+                        alert('Error performing bulk action');
+                    }
+                }
+            }
+        }
+    </script>
+</body>
+</html>
