@@ -97,9 +97,11 @@ class Scheduler:
         self.config: Optional[Config] = None
         self.running = False
         self.thread = None
+        self.sync_thread = None
         self.worker_pool = None
         self.stop_event = threading.Event()
         self.wake_event = threading.Event()
+        self.sync_wake_event = threading.Event()  # Separate event for sync thread
         self.force_sync = False
         self.paused = False
         self.last_sync_time: Optional[datetime] = None # Will be loaded from DB
@@ -107,7 +109,7 @@ class Scheduler:
     def trigger_sync(self):
         self.force_sync = True
         logger.info("Manual sync requested")
-        self.wake_event.set() # Interrupt sleep for immediate sync
+        self.sync_wake_event.set()  # Wake sync thread for immediate sync
 
     def pause(self):
         self.paused = True
@@ -131,6 +133,11 @@ class Scheduler:
         
         self.thread = threading.Thread(target=self._run_loop, daemon=True)
         self.thread.start()
+
+        # Start background sync thread
+        self.sync_thread = threading.Thread(target=self._sync_loop, daemon=True)
+        self.sync_thread.start()
+
         logger.info("Scheduler started")
 
     def stop(self):
@@ -141,6 +148,8 @@ class Scheduler:
             self.worker_pool.shutdown()
         if self.thread:
             self.thread.join()
+        if self.sync_thread:
+            self.sync_thread.join()
         logger.info("Scheduler stopped")
     
     def _get_selected_gpus(self):
@@ -256,6 +265,34 @@ class Scheduler:
             logger.error(f"Error loading config: {e}")
             self.config = None
 
+    def _sync_loop(self):
+        """Background thread for library sync operations to avoid blocking queue processing."""
+        while not self.stop_event.is_set():
+            try:
+                if not self.config:
+                    time.sleep(10)
+                    continue
+
+                # Check if sync is needed (every 12 hours or when forced)
+                sync_needed = self.force_sync or \
+                              (time.time() - self.last_sync_time.timestamp() > 12 * 3600 if self.last_sync_time else True)
+
+                if sync_needed:
+                    logger.info("Background sync: Starting library sync...")
+                    self.sync_library()
+                    self.last_sync_time = datetime.utcnow()
+                    self.force_sync = False
+                    self.sync_wake_event.clear()  # Clear the wake event after sync
+                    logger.info("Background sync: Library sync complete")
+
+                # Wait 60 seconds or until wake event is set (for manual sync trigger)
+                # Using sync_wake_event.wait with timeout allows immediate response to manual sync
+                self.sync_wake_event.wait(60)
+
+            except Exception as e:
+                logger.error(f"Error in sync loop: {e}")
+                time.sleep(60)
+
     def _run_loop(self):
         while not self.stop_event.is_set(): # Main loop condition for stopping
             try:
@@ -266,16 +303,6 @@ class Scheduler:
                         time.sleep(5)
                         continue
 
-                # Determine if sync is needed
-                sync_needed = self.force_sync or \
-                              (time.time() - self.last_sync_time.timestamp() > 12 * 3600 if self.last_sync_time else True)
-                
-                if sync_needed:
-                    logger.debug("Performing library sync...")
-                    self.sync_library()
-                    self.last_sync_time = datetime.utcnow()
-                    self.force_sync = False
-                
                 self.process_queue()
                 
                 logger.debug(f"Scheduler loop done. Sleeping for {self.config.scheduler_loop_interval}s.")
@@ -649,8 +676,12 @@ class Scheduler:
         if self.paused:
             return
 
-        # Fetch batch of items
-        batch_size = 10
+        # Fetch batch of items - match the number of available workers
+        # This ensures we queue exactly as many items as we can process in parallel
+        if self.config and self.worker_pool:
+            batch_size = self.config.gpu_threads + self.config.cpu_threads
+        else:
+            batch_size = 10  # Fallback if config not loaded yet
         
         with Session(engine) as session:
             # Prioritize: Status is MISSING or QUEUED.
