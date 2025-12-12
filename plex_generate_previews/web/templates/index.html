@@ -123,7 +123,6 @@
                 </thead>
                 <tbody>
                     <template x-for="item in items" :key="item.id">
-                        <>
                         <tr class="border-b border-gray-800 hover:bg-gray-700 transition">
                             <td class="py-3 pl-2">
                                 <input type="checkbox" :value="item.id" @change="toggleSelect(item.id)" :checked="selectedIds.includes(item.id)" class="cursor-pointer">
@@ -189,59 +188,58 @@
                                     </template>
                                 </div>
                             </td>
-                        </tr>
-                        <!-- Details Row -->
-                        <tr x-show="isExpanded(item.id)" class="bg-gray-800">
-                            <td colspan="9" class="py-4 px-6">
-                                <div class="space-y-3 text-sm">
-                                    <!-- Item ID and Bundle Hash -->
-                                    <div class="grid grid-cols-2 gap-4">
-                                        <div>
-                                            <span class="text-gray-400 font-semibold">Item ID:</span>
-                                            <span class="text-gray-200 ml-2" x-text="item.id"></span>
-                                        </div>
-                                        <div>
-                                            <span class="text-gray-400 font-semibold">Bundle Hash:</span>
-                                            <span class="text-gray-200 ml-2 font-mono text-xs" x-text="item.bundle_hash || 'N/A'"></span>
-                                        </div>
-                                    </div>
-
-                                    <!-- Error Details (for failed items) -->
-                                    <div x-show="item.status === 'failed'" class="bg-red-900/20 border border-red-700 rounded p-3">
-                                        <h4 class="font-bold text-red-400 mb-2">❌ Error Details:</h4>
-                                        <p class="text-red-300 font-mono text-xs break-all" x-text="item.error_message || 'No error message available'"></p>
-                                    </div>
-
-                                    <!-- File Paths -->
-                                    <div class="space-y-2">
-                                        <!-- Media File Path -->
-                                        <div>
-                                            <span class="text-gray-400 font-semibold">Media Path:</span>
-                                            <div class="text-gray-200 font-mono text-xs mt-1 break-all bg-gray-900 p-2 rounded" x-text="item.file_path || 'Not yet available'"></div>
+                            <!-- Expandable details cell -->
+                            <td colspan="9" class="p-0">
+                                <div x-show="isExpanded(item.id)" x-collapse class="bg-gray-800 px-6 py-4 border-t border-gray-700">
+                                    <div class="space-y-3 text-sm">
+                                        <!-- Item ID and Bundle Hash -->
+                                        <div class="grid grid-cols-2 gap-4">
+                                            <div>
+                                                <span class="text-gray-400 font-semibold">Item ID:</span>
+                                                <span class="text-gray-200 ml-2" x-text="item.id"></span>
+                                            </div>
+                                            <div>
+                                                <span class="text-gray-400 font-semibold">Bundle Hash:</span>
+                                                <span class="text-gray-200 ml-2 font-mono text-xs" x-text="item.bundle_hash || 'N/A'"></span>
+                                            </div>
                                         </div>
 
-                                        <!-- BIF File Path (for completed items) -->
-                                        <div x-show="item.status === 'completed'">
-                                            <span class="text-gray-400 font-semibold">BIF Location:</span>
-                                            <div class="text-green-300 font-mono text-xs mt-1 break-all bg-gray-900 p-2 rounded" x-text="item.bif_path || 'Not yet available'"></div>
+                                        <!-- Error Details (for failed items) -->
+                                        <div x-show="item.status === 'failed'" class="bg-red-900/20 border border-red-700 rounded p-3">
+                                            <h4 class="font-bold text-red-400 mb-2">❌ Error Details:</h4>
+                                            <p class="text-red-300 font-mono text-xs break-all" x-text="item.error_message || 'No error message available'"></p>
                                         </div>
-                                    </div>
 
-                                    <!-- Processing Info -->
-                                    <div class="grid grid-cols-2 gap-4 text-xs">
-                                        <div>
-                                            <span class="text-gray-400">Progress:</span>
-                                            <span class="text-gray-200 ml-2" x-text="item.progress + '%'"></span>
+                                        <!-- File Paths -->
+                                        <div class="space-y-2">
+                                            <!-- Media File Path -->
+                                            <div>
+                                                <span class="text-gray-400 font-semibold">Media Path:</span>
+                                                <div class="text-gray-200 font-mono text-xs mt-1 break-all bg-gray-900 p-2 rounded" x-text="item.file_path || 'Not yet available'"></div>
+                                            </div>
+
+                                            <!-- BIF File Path (for completed items) -->
+                                            <div x-show="item.status === 'completed'">
+                                                <span class="text-gray-400 font-semibold">BIF Location:</span>
+                                                <div class="text-green-300 font-mono text-xs mt-1 break-all bg-gray-900 p-2 rounded" x-text="item.bif_path || 'Not yet available'"></div>
+                                            </div>
                                         </div>
-                                        <div>
-                                            <span class="text-gray-400">Media Type:</span>
-                                            <span class="text-gray-200 ml-2 capitalize" x-text="item.media_type"></span>
+
+                                        <!-- Processing Info -->
+                                        <div class="grid grid-cols-2 gap-4 text-xs">
+                                            <div>
+                                                <span class="text-gray-400">Progress:</span>
+                                                <span class="text-gray-200 ml-2" x-text="item.progress + '%'"></span>
+                                            </div>
+                                            <div>
+                                                <span class="text-gray-400">Media Type:</span>
+                                                <span class="text-gray-200 ml-2 capitalize" x-text="item.media_type"></span>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
                             </td>
                         </tr>
-                        </>
                     </template>
                     <tr x-show="items.length === 0">
                         <td colspan="9" class="py-8 text-center text-gray-500">No items found matching your criteria.</td>
