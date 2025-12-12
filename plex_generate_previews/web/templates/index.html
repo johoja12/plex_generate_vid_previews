@@ -193,41 +193,51 @@
                         <!-- Details Row -->
                         <tr x-show="isExpanded(item.id)" class="bg-gray-800">
                             <td colspan="9" class="py-4 px-6">
-                                <div class="space-y-2 text-sm">
-                                    <!-- For Failed Items -->
-                                    <template x-if="item.status === 'failed' && item.error_message">
-                                        <div class="bg-red-900/20 border border-red-700 rounded p-3">
-                                            <h4 class="font-bold text-red-400 mb-2">Error Details:</h4>
-                                            <p class="text-red-300 font-mono text-xs" x-text="item.error_message"></p>
-                                        </div>
-                                    </template>
-
-                                    <!-- For Completed Items -->
-                                    <template x-if="item.status === 'completed'">
-                                        <div class="space-y-2">
-                                            <div x-show="item.bif_path">
-                                                <span class="text-gray-400">BIF Location:</span>
-                                                <span class="text-gray-200 font-mono text-xs ml-2" x-text="item.bif_path"></span>
-                                            </div>
-                                            <div x-show="item.file_path">
-                                                <span class="text-gray-400">Media Path:</span>
-                                                <span class="text-gray-200 font-mono text-xs ml-2" x-text="item.file_path"></span>
-                                            </div>
-                                        </div>
-                                    </template>
-
-                                    <!-- For Other Statuses -->
-                                    <template x-if="item.status !== 'failed' && item.status !== 'completed'">
+                                <div class="space-y-3 text-sm">
+                                    <!-- Item ID and Bundle Hash -->
+                                    <div class="grid grid-cols-2 gap-4">
                                         <div>
-                                            <div x-show="item.file_path">
-                                                <span class="text-gray-400">Media Path:</span>
-                                                <span class="text-gray-200 font-mono text-xs ml-2" x-text="item.file_path"></span>
-                                            </div>
-                                            <div x-show="!item.file_path" class="text-gray-500 italic">
-                                                No additional details available.
-                                            </div>
+                                            <span class="text-gray-400 font-semibold">Item ID:</span>
+                                            <span class="text-gray-200 ml-2" x-text="item.id"></span>
                                         </div>
-                                    </template>
+                                        <div>
+                                            <span class="text-gray-400 font-semibold">Bundle Hash:</span>
+                                            <span class="text-gray-200 ml-2 font-mono text-xs" x-text="item.bundle_hash || 'N/A'"></span>
+                                        </div>
+                                    </div>
+
+                                    <!-- Error Details (for failed items) -->
+                                    <div x-show="item.status === 'failed'" class="bg-red-900/20 border border-red-700 rounded p-3">
+                                        <h4 class="font-bold text-red-400 mb-2">❌ Error Details:</h4>
+                                        <p class="text-red-300 font-mono text-xs break-all" x-text="item.error_message || 'No error message available'"></p>
+                                    </div>
+
+                                    <!-- File Paths -->
+                                    <div class="space-y-2">
+                                        <!-- Media File Path -->
+                                        <div>
+                                            <span class="text-gray-400 font-semibold">Media Path:</span>
+                                            <div class="text-gray-200 font-mono text-xs mt-1 break-all bg-gray-900 p-2 rounded" x-text="item.file_path || 'Not yet available'"></div>
+                                        </div>
+
+                                        <!-- BIF File Path (for completed items) -->
+                                        <div x-show="item.status === 'completed'">
+                                            <span class="text-gray-400 font-semibold">BIF Location:</span>
+                                            <div class="text-green-300 font-mono text-xs mt-1 break-all bg-gray-900 p-2 rounded" x-text="item.bif_path || 'Not yet available'"></div>
+                                        </div>
+                                    </div>
+
+                                    <!-- Processing Info -->
+                                    <div class="grid grid-cols-2 gap-4 text-xs">
+                                        <div>
+                                            <span class="text-gray-400">Progress:</span>
+                                            <span class="text-gray-200 ml-2" x-text="item.progress + '%'"></span>
+                                        </div>
+                                        <div>
+                                            <span class="text-gray-400">Media Type:</span>
+                                            <span class="text-gray-200 ml-2 capitalize" x-text="item.media_type"></span>
+                                        </div>
+                                    </div>
                                 </div>
                             </td>
                         </tr>
