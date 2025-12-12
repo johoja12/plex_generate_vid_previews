@@ -271,14 +271,14 @@ class Scheduler:
                               (time.time() - self.last_sync_time.timestamp() > 12 * 3600 if self.last_sync_time else True)
                 
                 if sync_needed:
-                    logger.info("Performing library sync...")
+                    logger.debug("Performing library sync...")
                     self.sync_library()
                     self.last_sync_time = datetime.utcnow()
                     self.force_sync = False
                 
                 self.process_queue()
                 
-                logger.info(f"Scheduler loop done. Sleeping for {self.config.scheduler_loop_interval}s.")
+                logger.debug(f"Scheduler loop done. Sleeping for {self.config.scheduler_loop_interval}s.")
                 
                 # Clear wake event before waiting (if it was set)
                 self.wake_event.clear()
@@ -316,7 +316,7 @@ class Scheduler:
             logger.warning(f"Media path does not exist: {media_localhost_path}")
             return {}
 
-        logger.info(f"Scanning filesystem for existing BIF files in {media_localhost_path}...")
+        logger.debug(f"Scanning filesystem for existing BIF files in {media_localhost_path}...")
         start_time = time.time()
 
         # Pattern to match BIF files: {plex_config}/Media/localhost/*/**.bundle/Contents/Indexes/index-sd.bif
@@ -324,8 +324,8 @@ class Scheduler:
         logger.debug(f"Glob pattern: {bif_pattern}")
 
         bif_files = glob_module.glob(bif_pattern)
-        logger.info(f"Found {len(bif_files)} BIF files in {time.time() - start_time:.2f} seconds")
-        
+        logger.debug(f"Found {len(bif_files)} BIF files in {time.time() - start_time:.2f} seconds")
+
         if len(bif_files) > 0:
             logger.debug(f"Sample found BIF paths: {bif_files[:3]}")
 
@@ -350,9 +350,9 @@ class Scheduler:
                 if failed_parse_count <= 5:
                     logger.debug(f"Could not extract bundle hash from path (regex mismatch): {bif_path}")
 
-        logger.info(f"Extracted {len(bundle_hash_map)} valid bundle hashes from BIF files")
+        logger.debug(f"Extracted {len(bundle_hash_map)} valid bundle hashes from BIF files")
         if failed_parse_count > 0:
-            logger.warning(f"Failed to parse hashes for {failed_parse_count} BIF files. Check debug logs for samples.")
+            logger.debug(f"Failed to parse hashes for {failed_parse_count} BIF files. Check debug logs for samples.")
             
         return bundle_hash_map
 
@@ -366,13 +366,13 @@ class Scheduler:
         Args:
             confirm_threshold: If True, bypass the 50% threshold check (user confirmed)
         """
-        logger.info("Discovering existing BIF files for MISSING items...")
+        logger.debug("Discovering existing BIF files for MISSING items...")
         if not self.config:
             logger.error("Cannot discover: scheduler not configured")
             return {"scanned": 0, "found": 0, "error": "Scheduler not configured"}
 
         # Log config details for debugging
-        logger.info(f"Plex config folder: {self.config.plex_config_folder}")
+        logger.debug(f"Plex config folder: {self.config.plex_config_folder}")
 
         try:
             # Step 1: Scan filesystem for all BIF files (single pass)
@@ -388,7 +388,7 @@ class Scheduler:
                 missing_items = session.exec(statement).all()
 
                 total_items = len(missing_items)
-                logger.info(f"Found {total_items} MISSING items in database")
+                logger.debug(f"Found {total_items} MISSING items in database")
 
                 if total_items == 0:
                     return {"scanned": 0, "found": 0}
@@ -418,7 +418,7 @@ class Scheduler:
 
                                 if result and result[0]:
                                     item.bundle_hash = result[0]
-                                    logger.info(f"Retrieved hash from Plex database for item {item.id}: {item.bundle_hash}")
+                                    logger.debug(f"Retrieved hash from Plex database for item {item.id}: {item.bundle_hash}")
                                     # Update the item in the session
                                     session.add(item)
                                 else:
@@ -434,7 +434,7 @@ class Scheduler:
                         found_items.append((item, bif_path))
                         # Log first few discoveries
                         if len(found_items) <= 5:
-                            logger.info(f"Found existing BIF for item {item.id} ({item.title}): {bif_path}")
+                            logger.debug(f"Found existing BIF for item {item.id} ({item.title}): {bif_path}")
                     elif not item.bundle_hash:
                         # Still no hash after database lookup - trigger Plex analysis as last resort
                         logger.debug(f"Item {item.id} ({item.title}) still has no bundle_hash after database lookup")
@@ -442,7 +442,7 @@ class Scheduler:
                             if plex is None:
                                 plex = plex_server(self.config)
 
-                            logger.info(f"Triggering analysis for item {item.id} ({item.title}) due to missing bundle hash")
+                            logger.debug(f"Triggering analysis for item {item.id} ({item.title}) due to missing bundle hash")
                             plex_item = plex.fetchItem(int(item.id))
                             plex_item.analyze()
                             analysis_triggered = True
@@ -469,7 +469,7 @@ class Scheduler:
 
                 # Step 4: Actually mark items as COMPLETED
                 for item, bif_path in found_items:
-                    logger.info(f"Marking item {item.id} ({item.title}) as COMPLETED (existing BIF found)")
+                    logger.debug(f"Marking item {item.id} ({item.title}) as COMPLETED (existing BIF found)")
                     item.status = PreviewStatus.COMPLETED
                     item.progress = 100
                     session.add(item)
@@ -578,11 +578,11 @@ class Scheduler:
             return {"verified": 0, "moved_to_missing": 0, "error": str(e)}
 
     def sync_library(self):
-        logger.info("Syncing library with Plex...")
+        logger.debug("Syncing library with Plex...")
         try:
             # Step 1: Scan filesystem once for all BIF files
             bundle_hash_map = self._scan_filesystem_for_bifs()
-            logger.info(f"Found {len(bundle_hash_map)} existing BIF files in filesystem")
+            logger.debug(f"Found {len(bundle_hash_map)} existing BIF files in filesystem")
 
             # Step 2: Get items from Plex
             plex = plex_server(self.config)
@@ -667,10 +667,10 @@ class Scheduler:
 
             # Log the order of items being processed for debugging
             if items:
-                logger.info(f"Processing batch of {len(items)} items (newest first):")
+                logger.debug(f"Processing batch of {len(items)} items (newest first):")
                 for idx, item in enumerate(items[:3]):  # Show first 3 items
                     added_date = item.added_at.strftime('%Y-%m-%d') if item.added_at else 'unknown'
-                    logger.info(f"  {idx+1}. {item.title} (added: {added_date})")
+                    logger.debug(f"  {idx+1}. {item.title} (added: {added_date})")
 
             # Prepare for worker pool
             # worker_pool.process_items expects List[tuple(key, title, type)]
@@ -688,7 +688,7 @@ class Scheduler:
         if not process_list:
             return
 
-        logger.info(f"Processing batch of {len(process_list)} items")
+        logger.debug(f"Processing batch of {len(process_list)} items")
         
         # Instantiate DbProgressManager
         pm = DbProgressManager()
@@ -721,21 +721,21 @@ class Scheduler:
 
                     # If BIF exists but status is not COMPLETED/FAILED, mark it as completed
                     if bif_exists and item.status not in [PreviewStatus.COMPLETED, PreviewStatus.FAILED]:
-                        logger.info(f"Post-processing: Marking item {item_id} ({item.title}) as COMPLETED (BIF file exists)")
+                        logger.debug(f"Post-processing: Marking item {item_id} ({item.title}) as COMPLETED (BIF file exists)")
                         item.status = PreviewStatus.COMPLETED
                         item.progress = 100
                         session.add(item)
                     # If progress is 100% but status is not COMPLETED/FAILED, mark it as completed
                     # (Don't override FAILED status even if progress is 100%)
                     elif item.progress >= 100 and item.status not in [PreviewStatus.COMPLETED, PreviewStatus.FAILED]:
-                        logger.info(f"Post-processing: Marking item {item_id} ({item.title}) as COMPLETED (progress=100%)")
+                        logger.debug(f"Post-processing: Marking item {item_id} ({item.title}) as COMPLETED (progress=100%)")
                         item.status = PreviewStatus.COMPLETED
                         item.progress = 100
                         session.add(item)
                     # If item was processing but progress is still 0, it might have failed
                     elif item.status == PreviewStatus.PROCESSING and item.progress == 0:
                         # Reset to QUEUED so it can be retried
-                        logger.warning(f"Post-processing: Item {item_id} ({item.title}) was processing but no progress made, resetting to QUEUED")
+                        logger.debug(f"Post-processing: Item {item_id} ({item.title}) was processing but no progress made, resetting to QUEUED")
                         item.status = PreviewStatus.QUEUED
                         session.add(item)
             session.commit()
