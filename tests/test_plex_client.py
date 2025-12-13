@@ -121,31 +121,31 @@ class TestFilterDuplicateLocations:
     def test_filter_duplicate_locations(self):
         """Test basic duplicate filtering."""
         media_items = [
-            ('key1', ['/path/to/video1.mkv'], 'Show S01E01', 'episode'),
-            ('key2', ['/path/to/video2.mkv'], 'Show S01E02', 'episode'),
-            ('key3', ['/path/to/video1.mkv'], 'Show S01E01 Part 2', 'episode'),  # Duplicate!
+            ('key1', ['/path/to/video1.mkv'], 'Show S01E01', 'episode', 'hash1', 'added1'),
+            ('key2', ['/path/to/video2.mkv'], 'Show S01E02', 'episode', 'hash2', 'added2'),
+            ('key3', ['/path/to/video1.mkv'], 'Show S01E01 Part 2', 'episode', 'hash3', 'added3'),  # Duplicate!
         ]
         
         filtered = filter_duplicate_locations(media_items)
         
         # Should only have 2 items (duplicate removed)
         assert len(filtered) == 2
-        assert ('key1', 'Show S01E01', 'episode') in filtered
-        assert ('key2', 'Show S01E02', 'episode') in filtered
-        assert ('key3', 'Show S01E01 Part 2', 'episode') not in filtered
+        assert ('key1', 'Show S01E01', 'episode', 'hash1', 'added1') in filtered
+        assert ('key2', 'Show S01E02', 'episode', 'hash2', 'added2') in filtered
+        assert ('key3', 'Show S01E01 Part 2', 'episode', 'hash3', 'added3') not in filtered
     
     def test_filter_duplicate_locations_multiple_files(self):
         """Test filtering with multi-part episodes."""
         media_items = [
-            ('key1', ['/path/to/video1.mkv', '/path/to/video2.mkv'], 'Show S01E01-E02', 'episode'),
-            ('key2', ['/path/to/video2.mkv', '/path/to/video3.mkv'], 'Show S01E02-E03', 'episode'),  # Overlaps!
+            ('key1', ['/path/to/video1.mkv', '/path/to/video2.mkv'], 'Show S01E01-E02', 'episode', 'hash1', 'added1'),
+            ('key2', ['/path/to/video2.mkv', '/path/to/video3.mkv'], 'Show S01E02-E03', 'episode', 'hash2', 'added2'),  # Overlaps!
         ]
         
         filtered = filter_duplicate_locations(media_items)
         
         # Second item should be filtered out due to overlap
         assert len(filtered) == 1
-        assert ('key1', 'Show S01E01-E02', 'episode') in filtered
+        assert ('key1', 'Show S01E01-E02', 'episode', 'hash1', 'added1') in filtered
     
     def test_filter_duplicate_locations_empty(self):
         """Test filtering empty list."""
@@ -155,75 +155,95 @@ class TestFilterDuplicateLocations:
     def test_filter_duplicate_locations_no_duplicates(self):
         """Test filtering with no duplicates."""
         media_items = [
-            ('key1', ['/path/to/video1.mkv'], 'Movie 1', 'movie'),
-            ('key2', ['/path/to/video2.mkv'], 'Movie 2', 'movie'),
-            ('key3', ['/path/to/video3.mkv'], 'Movie 3', 'movie'),
+            ('key1', ['/path/to/video1.mkv'], 'Movie 1', 'movie', 'hash1', 'added1'),
+            ('key2', ['/path/to/video2.mkv'], 'Movie 2', 'movie', 'hash2', 'added2'),
+            ('key3', ['/path/to/video3.mkv'], 'Movie 3', 'movie', 'hash3', 'added3'),
         ]
         
         filtered = filter_duplicate_locations(media_items)
         
         assert len(filtered) == 3
+        assert ('key1', 'Movie 1', 'movie', 'hash1', 'added1') in filtered
+        assert ('key2', 'Movie 2', 'movie', 'hash2', 'added2') in filtered
+        assert ('key3', 'Movie 3', 'movie', 'hash3', 'added3') in filtered
 
 
 class TestGetLibrarySections:
     """Test library section retrieval."""
     
-    def test_get_library_sections_movies(self, mock_config):
+    @patch('plex_generate_previews.plex_client.get_hash_with_fallback')
+    def test_get_library_sections_movies(self, mock_get_hash, mock_config):
         """Test getting movie libraries."""
+        mock_get_hash.return_value = "somehashmovie"
+
         mock_plex = MagicMock()
-        
+
         # Mock section
         mock_section = MagicMock()
         mock_section.title = "Movies"
         mock_section.METADATA_TYPE = "movie"
-        
+
         # Mock movie
         mock_movie = MagicMock()
         mock_movie.key = "/library/metadata/1"
+        mock_movie.ratingKey = "1"  # Plex API returns ratingKey as ID
         mock_movie.title = "Test Movie"
-        
+        mock_movie.locations = ["/data/movies/Test Movie.mkv"]
+        mock_movie.addedAt = "2023-01-01T12:00:00Z"
+
         mock_section.search.return_value = [mock_movie]
         mock_plex.library.sections.return_value = [mock_section]
-        
+
         sections = list(get_library_sections(mock_plex, mock_config))
-        
+
         assert len(sections) == 1
         section, media = sections[0]
         assert section == mock_section
         assert len(media) == 1
-        assert media[0][0] == "/library/metadata/1"
-        assert media[0][1] == "Test Movie"
-        assert media[0][2] == "movie"
+        # Format: (ratingKey, title, type, bundle_hash, addedAt)
+        assert media[0][0] == "1" # ratingKey
+        assert media[0][1] == "Test Movie" # title
+        assert media[0][2] == "movie" # type
+        assert media[0][3] == "somehashmovie" # bundle_hash
+        assert media[0][4] == "2023-01-01T12:00:00Z" # addedAt
     
-    def test_get_library_sections_episodes(self, mock_config):
+    @patch('plex_generate_previews.plex_client.get_hash_with_fallback')
+    def test_get_library_sections_episodes(self, mock_get_hash, mock_config):
         """Test getting TV show libraries."""
+        mock_get_hash.return_value = "somehashepisode"
+
         mock_plex = MagicMock()
-        
+
         # Mock section
         mock_section = MagicMock()
         mock_section.title = "TV Shows"
         mock_section.METADATA_TYPE = "episode"
-        
+
         # Mock episode
         mock_episode = MagicMock()
         mock_episode.key = "/library/metadata/123"
+        mock_episode.ratingKey = "123" # Plex API returns ratingKey as ID
         mock_episode.grandparentTitle = "Test Show"
         mock_episode.seasonEpisode = "s01e01"
         mock_episode.locations = ["/path/to/show.mkv"]
-        
+        mock_episode.addedAt = "2023-01-01T12:00:00Z"
+
         mock_section.search.return_value = [mock_episode]
         mock_plex.library.sections.return_value = [mock_section]
-        
+
         sections = list(get_library_sections(mock_plex, mock_config))
-        
+
         assert len(sections) == 1
         section, media = sections[0]
         assert section == mock_section
         assert len(media) == 1
-        assert media[0][0] == "/library/metadata/123"
-        assert "Test Show" in media[0][1]
-        assert "S01E01" in media[0][1]
-        assert media[0][2] == "episode"
+        # Format after duplicate filtering: (ratingKey, title, type, bundle_hash, addedAt)
+        assert media[0][0] == "123" # ratingKey
+        assert "Test Show" in media[0][1] # title
+        assert "S01E01" in media[0][1] # title
+        assert media[0][2] == "episode" # type
+        assert media[0][3] == "somehashepisode" # bundle_hash
+        assert media[0][4] == "2023-01-01T12:00:00Z" # addedAt
     
     def test_get_library_sections_filter(self, mock_config):
         """Test filtering by configured libraries."""

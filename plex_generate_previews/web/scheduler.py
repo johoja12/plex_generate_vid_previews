@@ -26,12 +26,18 @@ class DbProgressManager:
     def update_worker(self, worker_id, data: dict):
         item_key = data.get('item_key')
         if not item_key:
+            logger.debug(f"DbProgressManager: Skipping update - no item_key in data")
             return
 
         progress = data.get('progress_percent', 0)
         is_busy = data.get('is_busy', False)
         error_message = data.get('error_message')
         media_file = data.get('media_file')
+        is_failed = data.get('failed', False)
+
+        # Debug log for failed items
+        if is_failed:
+            logger.debug(f"DbProgressManager: Received failed=True for item {item_key}, progress={progress}, error={error_message}")
 
         # Throttle DB updates to every 2 seconds per worker, unless finished (100%) or starting (0%)
         current_time = time.time()
@@ -49,6 +55,9 @@ class DbProgressManager:
             try:
                 with Session(engine) as session:
                     item = session.get(MediaItem, int(item_key))
+                    if not item:
+                        logger.warning(f"DbProgressManager: Item {item_key} not found in database, cannot update status")
+                        return
                     if item:
                         if data.get('failed'):
                             # Task failed - mark as FAILED regardless of progress
@@ -273,9 +282,19 @@ class Scheduler:
                     time.sleep(10)
                     continue
 
-                # Check if sync is needed (every 12 hours or when forced)
+                # Get sync interval from settings (default: 6 hours = 21600 seconds)
+                sync_interval = 21600  # Default to 6 hours
+                try:
+                    with Session(engine) as session:
+                        settings = session.get(AppSettings, 1)
+                        if settings and settings.sync_interval:
+                            sync_interval = settings.sync_interval
+                except Exception as e:
+                    logger.debug(f"Could not load sync_interval from settings, using default: {e}")
+
+                # Check if sync is needed (based on sync_interval or when forced)
                 sync_needed = self.force_sync or \
-                              (time.time() - self.last_sync_time.timestamp() > 12 * 3600 if self.last_sync_time else True)
+                              (time.time() - self.last_sync_time.timestamp() > sync_interval if self.last_sync_time else True)
 
                 if sync_needed:
                     logger.info("Background sync: Starting library sync...")
@@ -439,7 +458,15 @@ class Scheduler:
                             if os.path.exists(db_path):
                                 conn = sqlite3.connect(db_path)
                                 cursor = conn.cursor()
-                                cursor.execute("SELECT hash FROM metadata_items WHERE id = ?", (item.id,))
+                                # Query media_parts.hash via JOIN (bundle hash is in media_parts, not metadata_items)
+                                query = """
+                                    SELECT media_parts.hash
+                                    FROM media_parts
+                                    JOIN media_items ON media_parts.media_item_id = media_items.id
+                                    WHERE media_items.metadata_item_id = ?
+                                    LIMIT 1
+                                """
+                                cursor.execute(query, (item.id,))
                                 result = cursor.fetchone()
                                 conn.close()
 
@@ -544,10 +571,10 @@ class Scheduler:
                 logger.error(f"Plex database not found at: {db_path}")
                 return {"error": "Plex database not found"}
 
-            # Get all bundle hashes from Plex database
+            # Get all bundle hashes from Plex database (from media_parts, not metadata_items)
             conn = sqlite3.connect(db_path)
             cursor = conn.cursor()
-            cursor.execute("SELECT hash FROM metadata_items WHERE hash IS NOT NULL")
+            cursor.execute("SELECT hash FROM media_parts WHERE hash IS NOT NULL")
             db_hashes = set(row[0] for row in cursor.fetchall())
             conn.close()
 
@@ -736,9 +763,14 @@ class Scheduler:
             plex = plex_server(self.config)
             sections = get_library_sections(plex, self.config)
 
+            # Track all valid item IDs from Plex for orphan cleanup
+            plex_item_ids = set()
+
             with Session(engine) as session:
                 for section, items in sections:
                     for item_key, title, item_type, bundle_hash, added_at in items:
+                        # Track this item ID as valid in Plex
+                        plex_item_ids.add(int(item_key))
                         # Check if exists
                         db_item = session.get(MediaItem, int(item_key))
 
@@ -774,6 +806,32 @@ class Scheduler:
                                 db_item.status = PreviewStatus.COMPLETED
                                 db_item.progress = 100
                                 session.add(db_item)
+
+                # Step 3: Clean up orphaned items (items in DB but no longer in Plex)
+                logger.debug(f"Found {len(plex_item_ids)} items in Plex")
+
+                # Get all item IDs currently in database
+                from sqlmodel import select
+                db_items = session.exec(select(MediaItem)).all()
+                db_item_ids = {item.id for item in db_items}
+                logger.debug(f"Found {len(db_item_ids)} items in database")
+
+                # Find orphaned items (in DB but not in Plex)
+                orphaned_ids = db_item_ids - plex_item_ids
+
+                if orphaned_ids:
+                    logger.info(f"Found {len(orphaned_ids)} orphaned items no longer in Plex - removing from database")
+
+                    # Delete orphaned items
+                    for orphaned_id in orphaned_ids:
+                        orphaned_item = session.get(MediaItem, orphaned_id)
+                        if orphaned_item:
+                            logger.debug(f"Removing orphaned item: {orphaned_id} ({orphaned_item.title})")
+                            session.delete(orphaned_item)
+
+                    logger.info(f"Removed {len(orphaned_ids)} orphaned items from database")
+                else:
+                    logger.debug("No orphaned items found")
 
                 session.commit()
             

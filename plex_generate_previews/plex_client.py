@@ -153,6 +153,9 @@ def get_hash_with_fallback(item, plex_config_folder: str) -> Optional[str]:
     Queries the Plex database using the item ID for better performance
     and reliability compared to API responses.
 
+    Note: The bundle hash is stored in media_parts.hash, not metadata_items.hash.
+    The metadata_items.hash field is often NULL and serves a different purpose.
+
     Args:
         item: Plex media item object
         plex_config_folder: Path to Plex config folder
@@ -172,8 +175,15 @@ def get_hash_with_fallback(item, plex_config_folder: str) -> Optional[str]:
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
 
-        # Query hash directly by metadata item ID
-        cursor.execute("SELECT hash FROM metadata_items WHERE id = ?", (item.ratingKey,))
+        # Query media_parts.hash via JOIN (bundle hash is in media_parts, not metadata_items)
+        query = """
+            SELECT media_parts.hash
+            FROM media_parts
+            JOIN media_items ON media_parts.media_item_id = media_items.id
+            WHERE media_items.metadata_item_id = ?
+            LIMIT 1
+        """
+        cursor.execute(query, (item.ratingKey,))
         result = cursor.fetchone()
 
         conn.close()
@@ -199,6 +209,9 @@ def get_hash_from_database(plex_config_folder: str, file_path: str) -> str:
 
     This is a fallback method when the Plex API doesn't return a hash.
 
+    Note: The bundle hash is stored in media_parts.hash, not metadata_items.hash.
+    The metadata_items.hash field is often NULL and serves a different purpose.
+
     Args:
         plex_config_folder: Path to Plex config folder
         file_path: Full path to the media file
@@ -217,13 +230,11 @@ def get_hash_from_database(plex_config_folder: str, file_path: str) -> str:
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
 
-        # Query to get hash for the given file path
+        # Query media_parts.hash directly (bundle hash is in media_parts, not metadata_items)
         query = """
-            SELECT metadata_items.hash
+            SELECT hash
             FROM media_parts
-            JOIN media_items ON media_parts.media_item_id = media_items.id
-            JOIN metadata_items ON metadata_items.id = media_items.metadata_item_id
-            WHERE media_parts.file = ?
+            WHERE file = ?
             LIMIT 1
         """
 
