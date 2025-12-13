@@ -443,7 +443,6 @@ class Scheduler:
                 found_items = []
                 scanned_count = 0
                 plex = None
-                analysis_triggered = False
 
                 for item in missing_items:
                     scanned_count += 1
@@ -472,7 +471,6 @@ class Scheduler:
 
                                 if result and result[0]:
                                     item.bundle_hash = result[0]
-                                    logger.debug(f"Retrieved hash from Plex database for item {item.id}: {item.bundle_hash}")
                                     # Update the item in the session
                                     session.add(item)
                                 else:
@@ -499,7 +497,6 @@ class Scheduler:
                             logger.debug(f"Triggering analysis for item {item.id} ({item.title}) due to missing bundle hash")
                             plex_item = plex.fetchItem(int(item.id))
                             plex_item.analyze()
-                            analysis_triggered = True
                         except Exception as e:
                             logger.warning(f"Failed to trigger analysis for item {item.id}: {e}")
 
@@ -529,11 +526,6 @@ class Scheduler:
                     session.add(item)
 
                 session.commit()
-                
-                # Schedule sync if we triggered analysis
-                if analysis_triggered:
-                    logger.info("Scheduled forced sync to pick up new bundle hashes after analysis")
-                    self.force_sync = True
 
             logger.info(f"Discovery complete: {scanned_count} items scanned, {found_count} marked as COMPLETED")
             return {"scanned": scanned_count, "found": found_count}

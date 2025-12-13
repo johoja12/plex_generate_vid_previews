@@ -189,7 +189,6 @@ def get_hash_with_fallback(item, plex_config_folder: str) -> Optional[str]:
         conn.close()
 
         if result and result[0]:
-            logger.debug(f"Retrieved hash from database for item {item.ratingKey} ({item.title}): {result[0]}")
             return result[0]
         else:
             logger.debug(f"No hash found in database for item {item.ratingKey} ({item.title})")
@@ -244,7 +243,6 @@ def get_hash_from_database(plex_config_folder: str, file_path: str) -> str:
         conn.close()
 
         if result and result[0]:
-            logger.debug(f"Found hash in database for {file_path}: {result[0]}")
             return result[0]
         else:
             logger.debug(f"No hash found in database for {file_path}")
