@@ -9,6 +9,7 @@ class PreviewStatus(str, Enum):
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
+    SLOW_FAILED = "slow_failed"
     IGNORED = "ignored"
 
 class MediaType(str, Enum):
@@ -32,6 +33,7 @@ class AppSettings(SQLModel, table=True):
     gpu_threads: int = 1
     cpu_threads: int = 1
     scheduler_loop_interval: int = 5 # Default to 5 seconds
+    sync_interval: int = 21600  # Sync interval in seconds (default: 6 hours)
     last_sync_time: Optional[datetime] = None
     
     updated_at: datetime = Field(default_factory=datetime.utcnow)

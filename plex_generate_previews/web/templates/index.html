@@ -100,6 +100,7 @@
                     <option value="processing">Processing</option>
                     <option value="completed">Completed</option>
                     <option value="failed">Failed</option>
+                    <option value="slow_failed">Slow Failed</option>
                 </select>
                 <label class="flex items-center bg-gray-700 px-3 py-2 rounded border border-gray-600 cursor-pointer hover:bg-gray-600 transition">
                     <input type="checkbox" x-model="hideCompleted" @change="page=1; fetchItems()" class="mr-2">
@@ -153,8 +154,9 @@
                                     'text-yellow-500': item.status === 'processing',
                                     'text-orange-500': item.status === 'queued',
                                     'text-red-500': item.status === 'missing',
-                                    'text-red-700': item.status === 'failed'
-                                }" x-text="item.status" class="uppercase text-xs font-bold bg-gray-900 px-2 py-1 rounded"></span>
+                                    'text-red-700': item.status === 'failed',
+                                    'text-purple-500': item.status === 'slow_failed'
+                                }" x-text="item.status.replace('_', ' ')" class="uppercase text-xs font-bold bg-gray-900 px-2 py-1 rounded"></span>
                             </td>
                             <td class="py-3 pr-2">
                                 <div class="w-24 bg-gray-600 rounded-full h-2.5 relative overflow-hidden">
@@ -174,7 +176,7 @@
                                             ⟳ Reset
                                         </button>
                                     </template>
-                                    <template x-if="item.status === 'failed'">
+                                    <template x-if="item.status === 'failed' || item.status === 'slow_failed'">
                                         <button @click="resetToMissing(item.id)" class="text-xs bg-red-900/50 hover:bg-red-900 text-red-200 px-2 py-1 rounded" title="Reset to Missing">
                                             ⟳ Reset
                                         </button>
@@ -184,12 +186,12 @@
                                             ⟳ Regen
                                         </button>
                                     </template>
-                                    <template x-if="item.status !== 'completed' && item.status !== 'failed'">
+                                    <template x-if="item.status !== 'completed' && item.status !== 'failed' && item.status !== 'slow_failed'">
                                         <button @click="markCompleted(item.id)" class="text-xs bg-green-900/50 hover:bg-green-900 text-green-200 px-2 py-1 rounded" title="Mark as Completed">
                                             ✓ Done
                                         </button>
                                     </template>
-                                    <template x-if="item.status !== 'failed'">
+                                    <template x-if="item.status !== 'failed' && item.status !== 'slow_failed'">
                                         <button @click="markFailed(item.id)" class="text-xs bg-red-800/50 hover:bg-red-800 text-red-200 px-2 py-1 rounded" title="Mark as Failed">
                                             ✗ Failed
                                         </button>

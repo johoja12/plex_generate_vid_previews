@@ -14,7 +14,7 @@ from typing import List, Optional, Any, Tuple
 from loguru import logger
 
 from .config import Config
-from .media_processing import process_item, CodecNotSupportedError, ItemNotFoundError
+from .media_processing import process_item, CodecNotSupportedError, ItemNotFoundError, SlowProcessingError
 from .utils import format_display_title
 from .progress_reporter import ProgressManager
 
@@ -262,6 +262,14 @@ class Worker:
                 if progress_callback:
                     progress_callback(0, 0, 0, speed="Failed", failed=True, error_message=error_msg)
                 self.failed += 1
+        except SlowProcessingError as e:
+            # Processing too slow (< 1x for > 5 minutes) - mark as failed
+            error_msg = "Processing too slow (< 1x for > 5 minutes)"
+            logger.warning(f"Worker {self.worker_id} marking {display_name} as failed: {error_msg}")
+            self.error_message = error_msg
+            if progress_callback:
+                progress_callback(0, 0, 0, speed="Too Slow", failed=True, error_message=error_msg)
+            self.failed += 1
         except Exception as e:
             error_msg = str(e)
             logger.error(f"Worker {self.worker_id} failed to process {display_name}: {e}")

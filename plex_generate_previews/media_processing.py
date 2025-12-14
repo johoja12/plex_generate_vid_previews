@@ -19,6 +19,7 @@ import xml.etree.ElementTree
 import tempfile
 from typing import Optional, List, Tuple
 from loguru import logger
+from plexapi.exceptions import NotFound
 
 from .utils import sanitize_path
 
@@ -47,15 +48,36 @@ except Exception as e:
     print('Proceeding anyway, but errors may occur during processing')
 
 from .config import Config
-from .plex_client import retry_plex_call
+from .plex_client import retry_plex_call, get_hash_from_database
 
 
 class CodecNotSupportedError(Exception):
     """
     Exception raised when a video codec is not supported by GPU hardware.
-    
+
     This exception signals that the file should be processed by a CPU worker
     instead of attempting CPU fallback within the GPU worker thread.
+    """
+    pass
+
+
+class ItemNotFoundError(Exception):
+    """
+    Exception raised when a media item is not found in Plex (404 error).
+
+    This typically occurs when an item was deleted from Plex after being
+    queued for processing. The item should be skipped gracefully rather
+    than counted as a processing failure.
+    """
+    pass
+
+
+class SlowProcessingError(Exception):
+    """
+    Exception raised when FFmpeg processing is too slow (< 1x speed for > 5 minutes).
+
+    This indicates the file is likely problematic or the system is overloaded.
+    The item should be marked as failed to prevent wasting resources.
     """
     pass
 
@@ -252,7 +274,7 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
             vf_parameters = f"fps=fps={fps_value}:round=up,zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p,{base_scale}"
     
     def _run_ffmpeg(use_skip: bool, gpu_override: Optional[str] = None, gpu_device_path_override: Optional[str] = None) -> tuple:
-        """Run FFmpeg once and return (returncode, seconds, speed, stderr_lines)."""
+        """Run FFmpeg once and return (returncode, seconds, speed, stderr_lines, total_duration)."""
         # Build FFmpeg command with proper argument ordering
         # Hardware acceleration flags must come BEFORE the input file (-i)
         args = [
@@ -307,17 +329,56 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
         ffmpeg_output_lines = []
         line_count = 0
 
-        def speed_capture_callback(progress_percent, current_duration, total_duration_param, speed_value, 
+        # Track slow processing (speed < 1x for > 5 minutes)
+        slow_start_time = None
+        SLOW_THRESHOLD = 5 * 60  # 5 minutes in seconds
+
+        def speed_capture_callback(progress_percent, current_duration, total_duration_param, speed_value,
                                   remaining_time=None, frame=0, fps=0, q=0, size=0, time_str="00:00:00.00", bitrate=0):
-            nonlocal speed_local
+            nonlocal speed_local, slow_start_time
             if speed_value and speed_value != "0.0x":
                 speed_local = speed_value
+
+                # Track slow processing
+                try:
+                    # Parse speed value (e.g., "0.5x" -> 0.5)
+                    speed_num = float(speed_value.replace('x', ''))
+                    if speed_num < 1.0:
+                        if slow_start_time is None:
+                            slow_start_time = time.time()
+                        elif time.time() - slow_start_time > SLOW_THRESHOLD:
+                            # Been slow for more than 5 minutes
+                            raise SlowProcessingError(f"Processing too slow (< 1x for > 5 minutes): {video_file}")
+                    else:
+                        # Speed is acceptable, reset timer
+                        slow_start_time = None
+                except (ValueError, AttributeError):
+                    # If speed parsing fails, ignore
+                    pass
+
             if progress_callback:
-                progress_callback(progress_percent, current_duration, total_duration_param, speed_value, 
+                progress_callback(progress_percent, current_duration, total_duration_param, speed_value,
                                 remaining_time, frame, fps, q, size, time_str, bitrate, media_file=video_file)
 
         time.sleep(0.02)
-        while proc.poll() is None:
+        try:
+            while proc.poll() is None:
+                if os.path.exists(output_file):
+                    try:
+                        with open(output_file, 'r', encoding='utf-8') as f:
+                            lines = f.readlines()
+                            if len(lines) > line_count:
+                                for i in range(line_count, len(lines)):
+                                    line = lines[i].strip()
+                                    if line:
+                                        ffmpeg_output_lines.append(line)
+                                        total_duration = parse_ffmpeg_progress_line(line, total_duration, speed_capture_callback)
+                                line_count = len(lines)
+                    except (OSError, IOError):
+                        pass
+                time.sleep(0.005)
+
+            # Process any remaining data
             if os.path.exists(output_file):
                 try:
                     with open(output_file, 'r', encoding='utf-8') as f:
@@ -328,59 +389,23 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
                                 if line:
                                     ffmpeg_output_lines.append(line)
                                     total_duration = parse_ffmpeg_progress_line(line, total_duration, speed_capture_callback)
-                            line_count = len(lines)
                 except (OSError, IOError):
                     pass
-            time.sleep(0.005)
-
-        # Process any remaining data
-        if os.path.exists(output_file):
-            try:
-                with open(output_file, 'r', encoding='utf-8') as f:
-                    lines = f.readlines()
-                    if len(lines) > line_count:
-                        for i in range(line_count, len(lines)):
-                            line = lines[i].strip()
-                            if line:
-                                ffmpeg_output_lines.append(line)
-                                total_duration = parse_ffmpeg_progress_line(line, total_duration, speed_capture_callback)
-            except (OSError, IOError):
-                pass
+        except SlowProcessingError:
+            # Terminate FFmpeg process if still running
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+            # Re-raise to be handled by worker
+            raise
 
         try:
             os.remove(output_file)
         except OSError:
             pass
-
-        # Error logging
-        if proc.returncode != 0:
-            logger.error(f'FFmpeg failed with return code {proc.returncode} for {video_file}')
-            
-            # Check for permission-related errors in FFmpeg output
-            # FFmpeg outputs "Permission denied" in messages like "av_interleaved_write_frame(): Permission denied"
-            # We use lowercase for case-insensitive matching
-            permission_keywords = ['permission denied', 'access denied']
-            permission_errors = []
-            for line in ffmpeg_output_lines:
-                line_lower = line.lower()
-                for keyword in permission_keywords:
-                    if keyword.lower() in line_lower:
-                        permission_errors.append(line.strip())
-                        break
-            
-            # Log permission errors at INFO level so users can see them without DEBUG
-            if permission_errors:
-                logger.info(f'Permission error detected while processing {video_file}:')
-                for error_line in permission_errors[:3]:  # Show up to 3 permission error lines
-                    logger.info(f'  {error_line}')
-                if len(permission_errors) > 3:
-                    logger.info(f'  ... and {len(permission_errors) - 3} more permission-related error(s)')
-            
-            # Always log full FFmpeg output at DEBUG level for detailed troubleshooting
-            if logger.level("DEBUG").no <= logger._core.min_level:
-                logger.debug(f"FFmpeg output ({len(ffmpeg_output_lines)} lines):")
-                for i, line in enumerate(ffmpeg_output_lines[-10:]):
-                    logger.debug(f"  {i+1:3d}: {line}")
 
         end_local = time.time()
         seconds_local = round(end_local - start_local, 1)
@@ -389,7 +414,10 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
             calculated_speed = total_duration / seconds_local
             speed_local = f"{calculated_speed:.0f}x"
 
-        return proc.returncode, seconds_local, speed_local, ffmpeg_output_lines
+        # Store return code and stderr for later error analysis
+        # Don't log error here - we'll check if images were generated first
+        # (FFmpeg can exit with non-zero code but still produce valid output, e.g., after SIGTERM)
+        return proc.returncode, seconds_local, speed_local, ffmpeg_output_lines, total_duration
 
     # Decide initial skip usage from heuristic
     use_skip_initial = heuristic_allows_skip(config.ffmpeg_path, video_file)
@@ -398,7 +426,7 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
     os.makedirs(output_folder, exist_ok=True)
 
     # First attempt
-    rc, seconds, speed, stderr_lines = _run_ffmpeg(use_skip_initial)
+    rc, seconds, speed, stderr_lines, total_duration = _run_ffmpeg(use_skip_initial)
 
     # Retry once without skip_frame only if FFmpeg returned non-zero and we tried with skip
     # (If we didn't use skip initially, retrying without skip would just repeat the same command)
@@ -415,13 +443,24 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
                 os.remove(img)
             except Exception:
                 pass
-        retry_rc, seconds, speed, retry_stderr_lines = _run_ffmpeg(use_skip=False)
-        # Update rc and stderr_lines to retry results for codec error detection
+        retry_rc, seconds, speed, retry_stderr_lines, retry_total_duration = _run_ffmpeg(use_skip=False)
+        # Update rc, stderr_lines, and total_duration to retry results for codec error detection
         rc = retry_rc
         stderr_lines = retry_stderr_lines
+        total_duration = retry_total_duration
     
     # Count images first to see if we have any (even if rc != 0, we might have partial success)
     image_count = len(glob.glob(os.path.join(output_folder, 'img*.jpg')))
+
+    # Calculate expected number of images based on video duration
+    # We need this to determine if the processing was interrupted early
+    expected_image_count = 0
+    completion_percentage = 0.0
+    if total_duration and total_duration > 0:
+        # Expected images = video_duration / frame_interval
+        expected_image_count = int(total_duration / config.plex_bif_frame_interval)
+        if expected_image_count > 0:
+            completion_percentage = (image_count / expected_image_count) * 100
 
     # Check for codec errors after both attempts (with and without skip_frame)
     # If in GPU context and codec error detected, raise exception for worker pool to handle
@@ -462,14 +501,85 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
         image_count = len(glob.glob(os.path.join(output_folder, '*.jpg')))
 
     hw = (gpu is not None and not did_cpu_fallback)
-    success = image_count > 0
+
+    # Determine success criteria:
+    # 1. Must have generated at least some images
+    # 2. If we know the expected count, must have at least 90% completion
+    #    (to avoid marking interrupted/incomplete processing as successful)
+    # 3. If we don't know expected count (total_duration=0), accept any images (legacy behavior)
+    MIN_COMPLETION_PERCENTAGE = 90.0
+
+    if expected_image_count > 0:
+        # We know how many images we should have - check completion percentage
+        success = completion_percentage >= MIN_COMPLETION_PERCENTAGE
+    else:
+        # Fallback: if we couldn't determine expected count, accept any images
+        success = image_count > 0
 
     if success:
         fallback_suffix = " (CPU fallback)" if did_cpu_fallback else (" (retry no-skip)" if did_retry else "")
-        logger.info(f'Generated Video Preview for {video_file} HW={hw} TIME={seconds}seconds SPEED={speed} IMAGES={image_count}{fallback_suffix}')
+        completion_info = f" ({completion_percentage:.1f}% of expected {expected_image_count})" if expected_image_count > 0 else ""
+        logger.info(f'Generated Video Preview for {video_file} HW={hw} TIME={seconds}seconds SPEED={speed} IMAGES={image_count}{completion_info}{fallback_suffix}')
+
+        # If FFmpeg exited with non-zero but we got images, log as debug (not error)
+        # This commonly happens with SIGTERM (exit 255) during graceful shutdown
+        if rc != 0:
+            logger.debug(f'FFmpeg exited with code {rc} but successfully generated {image_count} images for {video_file}')
     else:
         fallback_suffix = " (after CPU fallback)" if did_cpu_fallback else (" after retry" if did_retry else "")
-        logger.error(f'Failed to generate thumbnails for {video_file}; 0 images produced{fallback_suffix}')
+
+        # Provide detailed failure reason based on completion percentage
+        if image_count == 0:
+            logger.error(f'Failed to generate thumbnails for {video_file}; 0 images produced{fallback_suffix}')
+        elif expected_image_count > 0 and completion_percentage < MIN_COMPLETION_PERCENTAGE:
+            logger.error(f'Incomplete thumbnail generation for {video_file}; only {image_count}/{expected_image_count} images ({completion_percentage:.1f}%) produced - need {MIN_COMPLETION_PERCENTAGE}%{fallback_suffix}')
+            logger.error(f'FFmpeg exit code: {rc}')
+
+            # Log last 10 lines of stderr to understand why FFmpeg stopped early
+            if stderr_lines:
+                stderr_excerpt = '\n'.join(stderr_lines[-10:])
+                logger.error(f'FFmpeg stderr (last 10 lines):\n{stderr_excerpt}')
+            else:
+                logger.error('No FFmpeg stderr output available')
+
+            # Clean up incomplete images so they can be regenerated
+            logger.info(f'Cleaning up {image_count} incomplete thumbnail images from {output_folder}')
+            for img in glob.glob(os.path.join(output_folder, '*.jpg')):
+                try:
+                    os.remove(img)
+                except Exception as e:
+                    logger.warning(f'Failed to remove incomplete image {img}: {e}')
+            image_count = 0  # Update count after cleanup
+        else:
+            logger.error(f'Failed to generate thumbnails for {video_file}; {image_count} images produced{fallback_suffix}')
+
+        # Log FFmpeg error details only when we truly failed (no images generated)
+        if rc != 0:
+            logger.error(f'FFmpeg failed with return code {rc} for {video_file}')
+
+            # Check for permission-related errors in FFmpeg output
+            permission_keywords = ['permission denied', 'access denied']
+            permission_errors = []
+            for line in stderr_lines:
+                line_lower = line.lower()
+                for keyword in permission_keywords:
+                    if keyword.lower() in line_lower:
+                        permission_errors.append(line.strip())
+                        break
+
+            # Log permission errors at INFO level so users can see them without DEBUG
+            if permission_errors:
+                logger.info(f'Permission error detected while processing {video_file}:')
+                for error_line in permission_errors[:3]:  # Show up to 3 permission error lines
+                    logger.info(f'  {error_line}')
+                if len(permission_errors) > 3:
+                    logger.info(f'  ... and {len(permission_errors) - 3} more permission-related error(s)')
+
+            # Always log full FFmpeg output at DEBUG level for detailed troubleshooting
+            if logger.level("DEBUG").no <= logger._core.min_level:
+                logger.debug(f"FFmpeg output ({len(stderr_lines)} lines):")
+                for i, line in enumerate(stderr_lines[-10:]):
+                    logger.debug(f"  {i+1:3d}: {line}")
 
     return success, image_count, hw, seconds, speed
 
@@ -709,7 +819,16 @@ def process_item(item_key: str, gpu: Optional[str], gpu_device_path: Optional[st
         progress_callback: Callback function for progress updates
     """
     try:
-        data = retry_plex_call(plex.query, f'{item_key}/tree')
+        # Handle both raw IDs (ratingKey) and full paths
+        query_key = item_key
+        if str(item_key).isdigit():
+            query_key = f'/library/metadata/{item_key}'
+
+        data = retry_plex_call(plex.query, f'{query_key}/tree')
+    except NotFound as e:
+        # Item not found in Plex (404) - likely deleted after being queued
+        logger.info(f"Item {item_key} not found in Plex - may have been deleted. Skipping.")
+        raise ItemNotFoundError(f"Item {item_key} not found in Plex (404)")
     except (Exception, http.client.BadStatusLine, xml.etree.ElementTree.ParseError) as e:
         logger.error(f"Failed to query Plex for item {item_key} after retries: {e}")
         logger.error(f"Exception type: {type(e).__name__}")
@@ -718,67 +837,147 @@ def process_item(item_key: str, gpu: Optional[str], gpu_device_path: Optional[st
             logger.error(f"Request URL: {e.request.url}")
             logger.error(f"Request method: {e.request.method}")
             logger.error(f"Request headers: {e.request.headers}")
-        return
+        raise
     except Exception as e:
         logger.error(f"Error querying Plex for item {item_key}: {e}")
-        return
+        raise
+
+    # Track if we successfully processed at least one media part
+    processed_any = False
+    processing_error = None
 
     for media_part in data.findall('.//MediaPart'):
-        if 'hash' in media_part.attrib:
-            bundle_hash = media_part.attrib['hash']
-            # Apply path mapping if both mapping parameters are provided (for remote generation)
-            if config.plex_videos_path_mapping and config.plex_local_videos_path_mapping:
-                media_file = sanitize_path(media_part.attrib['file'].replace(config.plex_videos_path_mapping, config.plex_local_videos_path_mapping))
+        # Get the file path (as Plex sees it, before path mapping)
+        plex_file_path = media_part.attrib.get('file')
+        if not plex_file_path:
+            logger.warning(f'Skipping media part with no file path in item {item_key}')
+            continue
+
+        # Try to get hash from database first (primary source as requested)
+        logger.debug(f'Querying database for hash for {plex_file_path}')
+        bundle_hash = get_hash_from_database(config.plex_config_folder, plex_file_path)
+        
+        if bundle_hash:
+            logger.debug(f"Retrieved bundle hash from database: {bundle_hash}")
+        else:
+            # Fallback to API if DB fails or returns nothing
+            api_hash = media_part.attrib.get('hash')
+            if api_hash and len(api_hash) >= 2:
+                bundle_hash = api_hash
+                logger.warning(f"Hash not found in DB for {plex_file_path}, using API hash: {bundle_hash}")
             else:
-                # Use file path directly (for local generation)
-                media_file = sanitize_path(media_part.attrib['file'])
+                logger.debug(f"No hash found in DB or API for {plex_file_path}")
 
-            # Validate bundle_hash has sufficient length (at least 2 characters)
-            if not bundle_hash or len(bundle_hash) < 2:
-                hash_value = f'"{bundle_hash}"' if bundle_hash else '(empty)'
-                logger.warning(f'Skipping {media_file} due to invalid bundle hash from Plex: {hash_value} (length: {len(bundle_hash) if bundle_hash else 0}, required: >= 2)')
-                continue
+        # Apply path mapping
+        media_file = sanitize_path(plex_file_path)
+        
+        if config.plex_path_mappings:
+            # Sort mappings by length of remote path (descending) to ensure most specific match wins
+            sorted_mappings = sorted(config.plex_path_mappings, key=lambda x: len(x[0]), reverse=True)
+            for remote, local in sorted_mappings:
+                if remote in plex_file_path:
+                    media_file = sanitize_path(plex_file_path.replace(remote, local, 1))
+                    break
+        elif config.plex_videos_path_mapping and config.plex_local_videos_path_mapping:
+            # Fallback for legacy behavior (though load_config should have populated plex_path_mappings)
+            media_file = sanitize_path(plex_file_path.replace(config.plex_videos_path_mapping, config.plex_local_videos_path_mapping))
 
-            if not os.path.isfile(media_file):
-                logger.warning(f'Skipping as file not found {media_file}')
-                continue
+        # Validate bundle_hash has sufficient length (at least 2 characters)
+        if not bundle_hash or len(bundle_hash) < 2:
+            hash_value = f'"{bundle_hash}"' if bundle_hash else '(empty)'
+            logger.warning(f'Skipping {media_file} due to invalid or missing bundle hash (API and database): {hash_value} (length: {len(bundle_hash) if bundle_hash else 0}, required: >= 2)')
+            continue
 
-            try:
-                indexes_path, index_bif, tmp_path = _setup_bundle_paths(bundle_hash, config)
-            except Exception as e:
-                logger.error(f'Error generating bundle_file for {media_file} due to {type(e).__name__}:{str(e)}')
-                continue
+        if not os.path.isfile(media_file):
+            logger.warning(f'Skipping as file not found {media_file}')
+            logger.debug(f'Original Plex path: {plex_file_path}')
+            logger.debug(f'Mapped path: {media_file}')
+            
+            # Check if parent directory exists to help debug mapping issues
+            parent_dir = os.path.dirname(media_file)
+            if os.path.exists(parent_dir):
+                logger.debug(f'Parent directory exists: {parent_dir}')
+                try:
+                    # List directory contents (limit to first 10 items)
+                    contents = os.listdir(parent_dir)
+                    logger.debug(f'Directory contents (first 10): {contents[:10]}')
+                except Exception as e:
+                    logger.debug(f'Could not list directory contents: {e}')
+            else:
+                logger.debug(f'Parent directory does NOT exist: {parent_dir}')
+                
+                # Walk up path to find first existing directory
+                current_path = parent_dir
+                while current_path and current_path != '/':
+                    parent = os.path.dirname(current_path)
+                    if os.path.exists(parent):
+                        logger.debug(f'Found existing ancestor directory: {parent}')
+                        try:
+                             logger.debug(f'Contents of {parent} (first 10): {os.listdir(parent)[:10]}')
+                        except:
+                             pass
+                        break
+                    current_path = parent
+            continue
 
-            if os.path.isfile(index_bif) and config.regenerate_thumbnails:
+        try:
+            indexes_path, index_bif, tmp_path = _setup_bundle_paths(bundle_hash, config)
+            logger.debug(f"Bundle paths for {media_file}: hash={bundle_hash}, BIF={index_bif}")
+        except Exception as e:
+            logger.error(f'Error generating bundle_file for {media_file} due to {type(e).__name__}:{str(e)}')
+            continue
+
+        if os.path.isfile(index_bif):
+            if config.regenerate_thumbnails:
                 logger.debug(f'Deleting existing BIF file at {index_bif} to regenerate thumbnails for {media_file}')
                 try:
                     os.remove(index_bif)
                 except Exception as e:
                     logger.error(f'Error {type(e).__name__} deleting index file {media_file}: {str(e)}')
                     continue
+            else:
+                # BIF already exists and we're not regenerating - mark as successfully processed
+                logger.debug(f'BIF already exists, skipping generation: {index_bif}')
+                processed_any = True
+                continue
 
-            if not os.path.isfile(index_bif):
-                logger.debug(f'Generating thumbnails for {media_file} -> {index_bif}')
+        # BIF doesn't exist or was deleted for regeneration - generate it
+        logger.debug(f'Generating thumbnails for {media_file} -> {index_bif}')
 
-                # Ensure directories exist
-                if not _ensure_directories(indexes_path, tmp_path, media_file):
-                    continue
+        # Ensure directories exist
+        if not _ensure_directories(indexes_path, tmp_path, media_file):
+            continue
 
-                # Generate images and create BIF file
-                try:
-                    _generate_and_save_bif(media_file, tmp_path, index_bif, gpu, gpu_device_path, 
-                                          config, progress_callback)
-                except CodecNotSupportedError:
-                    # Re-raise so worker can handle codec errors
-                    raise
-                except RuntimeError as e:
-                    # RuntimeError from _generate_and_save_bif means generation failed
-                    # Log and continue to next media part
-                    logger.error(f'Error processing {media_file}: {str(e)}')
-                    continue
-                except Exception as e:
-                    logger.error(f'Error processing {media_file}: {type(e).__name__}: {str(e)}')
-                    continue
-                finally:
-                    # Always clean up temp directory (may already be cleaned up by _generate_and_save_bif)
-                    _cleanup_temp_directory(tmp_path)
+        # Generate images and create BIF file
+        try:
+            _generate_and_save_bif(media_file, tmp_path, index_bif, gpu, gpu_device_path,
+                                  config, progress_callback)
+            # Mark that we successfully processed this media part
+            processed_any = True
+        except CodecNotSupportedError:
+            # Re-raise so worker can handle codec errors
+            raise
+        except RuntimeError as e:
+            # RuntimeError from _generate_and_save_bif means generation failed
+            # Store error and continue to next media part
+            logger.error(f'Error processing {media_file}: {str(e)}')
+            processing_error = e
+            continue
+        except Exception as e:
+            logger.error(f'Error processing {media_file}: {type(e).__name__}: {str(e)}')
+            processing_error = e
+            continue
+        finally:
+            # Always clean up temp directory (may already be cleaned up by _generate_and_save_bif)
+            _cleanup_temp_directory(tmp_path)
+
+    # After processing all media parts, check if we successfully processed at least one
+    # If no parts were processed successfully and we have an error, raise it to mark item as failed
+    if not processed_any:
+        if processing_error is not None:
+            raise processing_error
+        else:
+            # If no parts were processed and no specific error occurred, it means
+            # all parts were skipped (e.g., due to missing bundle_hash or file_not_found)
+            # This should be treated as a failure for the item.
+            raise RuntimeError(f"No media parts were successfully processed for item {item_key}. All parts were skipped (e.g. missing bundle_hash or file not found).")

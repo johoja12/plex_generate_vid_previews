@@ -60,11 +60,15 @@ class DbProgressManager:
                         return
                     if item:
                         if data.get('failed'):
-                            # Task failed - mark as FAILED regardless of progress
-                            item.status = PreviewStatus.FAILED
+                            # Task failed - check if it's slow processing
+                            if error_message and "too slow" in error_message.lower():
+                                item.status = PreviewStatus.SLOW_FAILED
+                                logger.info(f"Marked item {item_key} ({item.title}) as SLOW_FAILED in database: {error_message}")
+                            else:
+                                item.status = PreviewStatus.FAILED
+                                logger.info(f"Marked item {item_key} ({item.title}) as FAILED in database: {error_message}")
                             item.progress = int(progress) if progress > 0 else item.progress
                             item.error_message = error_message
-                            logger.info(f"Marked item {item_key} ({item.title}) as FAILED in database: {error_message}")
                         elif progress >= 100:
                             # Only mark as COMPLETED if not failed
                             item.status = PreviewStatus.COMPLETED
@@ -954,14 +958,14 @@ class Scheduler:
                             bif_exists = True
 
                     # If BIF exists but status is not COMPLETED/FAILED, mark it as completed
-                    if bif_exists and item.status not in [PreviewStatus.COMPLETED, PreviewStatus.FAILED]:
+                    if bif_exists and item.status not in [PreviewStatus.COMPLETED, PreviewStatus.FAILED, PreviewStatus.SLOW_FAILED]:
                         logger.debug(f"Post-processing: Marking item {item_id} ({item.title}) as COMPLETED (BIF file exists)")
                         item.status = PreviewStatus.COMPLETED
                         item.progress = 100
                         session.add(item)
-                    # If progress is 100% but status is not COMPLETED/FAILED, mark it as completed
-                    # (Don't override FAILED status even if progress is 100%)
-                    elif item.progress >= 100 and item.status not in [PreviewStatus.COMPLETED, PreviewStatus.FAILED]:
+                    # If progress is 100% but status is not COMPLETED/FAILED/SLOW_FAILED, mark it as completed
+                    # (Don't override FAILED or SLOW_FAILED status even if progress is 100%)
+                    elif item.progress >= 100 and item.status not in [PreviewStatus.COMPLETED, PreviewStatus.FAILED, PreviewStatus.SLOW_FAILED]:
                         logger.debug(f"Post-processing: Marking item {item_id} ({item.title}) as COMPLETED (progress=100%)")
                         item.status = PreviewStatus.COMPLETED
                         item.progress = 100
