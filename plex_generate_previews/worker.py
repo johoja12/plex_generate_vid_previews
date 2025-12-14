@@ -14,7 +14,7 @@ from typing import List, Optional, Any, Tuple
 from loguru import logger
 
 from .config import Config
-from .media_processing import process_item, CodecNotSupportedError
+from .media_processing import process_item, CodecNotSupportedError, ItemNotFoundError
 from .utils import format_display_title
 from .progress_reporter import ProgressManager
 
@@ -81,10 +81,11 @@ class Worker:
         
         # Track verbose logging
         self.last_verbose_log_time = 0
-        
+
         # Statistics
         self.completed = 0
         self.failed = 0
+        self.skipped = 0  # Items not found in Plex (404 errors)
     
     def is_available(self) -> bool:
         """Check if this worker is available for a new task."""
@@ -209,13 +210,22 @@ class Worker:
         
         try:
             process_item(item_key, self.gpu, self.gpu_device, config, plex, progress_callback)
-            
+
             # Ensure 100% progress is reported upon success
             if progress_callback:
                 progress_callback(100, self.total_duration, self.total_duration, speed="Finished")
 
             # Mark as completed immediately (thread will finish after this)
             self.completed += 1
+        except ItemNotFoundError as e:
+            # Item not found in Plex (404) - mark as failed in DB to prevent re-queuing
+            error_msg = f"Not found in Plex: {str(e)}"
+            logger.info(f"Worker {self.worker_id} skipping {display_name}: item not found in Plex")
+            self.error_message = error_msg
+            if progress_callback:
+                # Mark as failed so scheduler won't re-queue this item
+                progress_callback(0, 0, 0, speed="Skipped", failed=True, error_message=error_msg)
+            self.skipped += 1
         except CodecNotSupportedError as e:
             # Codec not supported by GPU - re-queue for CPU worker
             if self.worker_type == 'GPU':
@@ -409,25 +419,33 @@ class WorkerPool:
             logger.debug(f"Could not re-query Plex for {item_key}: {e}")
         return ('Unknown (fallback)', 'unknown')
     
-    def _assign_fallback_task(self, worker: 'Worker', config: Config, plex, 
+    def _assign_fallback_task(self, worker: 'Worker', config: Config, plex,
                               title_max_width: int) -> bool:
         """
         Assign a task from fallback queue to a CPU worker.
-        
+
         Returns:
             True if task was assigned, False if queue was empty
         """
         try:
             fallback_item = self.cpu_fallback_queue.get_nowait()
             item_key, media_title, media_type = fallback_item
-            
+
+            # Check if any other worker is already processing this item
+            for other_worker in self.workers:
+                if other_worker != worker and other_worker.current_task == item_key:
+                    logger.warning(f"Skipping duplicate fallback assignment: {media_title} (item {item_key}) already being processed by worker {other_worker.worker_id}")
+                    # Put the item back in the queue since we didn't assign it
+                    self.cpu_fallback_queue.put(fallback_item)
+                    return False
+
             # Re-query Plex for media info if not available
             if media_title is None or media_type is None:
                 media_title, media_type = self._get_plex_media_info(plex, item_key)
-            
+
             progress_callback = partial(self._update_worker_progress, worker)
             worker.assign_task(
-                item_key, config, plex, 
+                item_key, config, plex,
                 progress_callback=progress_callback,
                 media_title=media_title,
                 media_type=media_type,
@@ -438,21 +456,28 @@ class WorkerPool:
         except queue.Empty:
             return False
     
-    def _assign_main_queue_task(self, worker: 'Worker', media_queue: List[tuple], 
+    def _assign_main_queue_task(self, worker: 'Worker', media_queue: List[tuple],
                                 config: Config, plex, title_max_width: int) -> bool:
         """
         Assign a task from main queue to a worker.
-        
+
         Returns:
             True if task was assigned, False if queue was empty
         """
         if not media_queue:
             return False
-        
+
         item_key, media_title, media_type = media_queue.pop(0)
+
+        # Check if any other worker is already processing this item
+        for other_worker in self.workers:
+            if other_worker != worker and other_worker.current_task == item_key:
+                logger.warning(f"Skipping duplicate assignment: {media_title} (item {item_key}) already being processed by worker {other_worker.worker_id}")
+                return False
+
         progress_callback = partial(self._update_worker_progress, worker)
         cpu_fallback_queue = self.cpu_fallback_queue if worker.worker_type == 'GPU' else None
-        
+
         worker.assign_task(
             item_key, config, plex,
             progress_callback=progress_callback,
@@ -640,9 +665,10 @@ class WorkerPool:
                 # Calculate actual completed count from worker stats (most reliable)
                 actual_completed = sum(worker.completed for worker in self.workers)
                 actual_failed = sum(worker.failed for worker in self.workers)
-                actual_processed = actual_completed + actual_failed
-                
-                # Exit if all items processed (completed or failed)
+                actual_skipped = sum(worker.skipped for worker in self.workers)
+                actual_processed = actual_completed + actual_failed + actual_skipped
+
+                # Exit if all items processed (completed, failed, or skipped)
                 if actual_processed >= total_items:
                     # Give threads time to finish and update is_busy flags
                     busy_retries = 0
@@ -676,11 +702,19 @@ class WorkerPool:
         # Final statistics
         total_completed = sum(worker.completed for worker in self.workers)
         total_failed = sum(worker.failed for worker in self.workers)
-        
+        total_skipped = sum(worker.skipped for worker in self.workers)
+
         # Clean up worker progress
         progress_manager.cleanup_workers()
-        
-        logger.info(f'Processing complete: {total_completed} successful, {total_failed} failed')
+
+        # Build statistics message
+        stats_parts = [f'{total_completed} successful']
+        if total_failed > 0:
+            stats_parts.append(f'{total_failed} failed')
+        if total_skipped > 0:
+            stats_parts.append(f'{total_skipped} skipped (not found)')
+
+        logger.info(f'Processing complete: {", ".join(stats_parts)}')
     
     def _update_worker_progress(self, worker, progress_percent, current_duration, total_duration, speed=None,
                                remaining_time=None, frame=0, fps=0, q=0, size=0, time_str="00:00:00.00", bitrate=0, media_file=None, failed=False, error_message=None):
