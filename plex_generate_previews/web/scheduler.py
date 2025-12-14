@@ -52,52 +52,71 @@ class DbProgressManager:
 
         if should_update:
             self.last_update[worker_id] = current_time
-            try:
-                with Session(engine) as session:
-                    item = session.get(MediaItem, int(item_key))
-                    if not item:
-                        logger.warning(f"DbProgressManager: Item {item_key} not found in database, cannot update status")
-                        return
-                    if item:
-                        if data.get('failed'):
-                            # Task failed - check if it's slow processing
-                            if error_message and "too slow" in error_message.lower():
-                                item.status = PreviewStatus.SLOW_FAILED
-                                logger.info(f"Marked item {item_key} ({item.title}) as SLOW_FAILED in database: {error_message}")
-                            else:
-                                item.status = PreviewStatus.FAILED
-                                logger.info(f"Marked item {item_key} ({item.title}) as FAILED in database: {error_message}")
-                            item.progress = int(progress) if progress > 0 else item.progress
-                            item.error_message = error_message
-                        elif progress >= 100:
-                            # Only mark as COMPLETED if not failed
-                            item.status = PreviewStatus.COMPLETED
-                            item.progress = 100
-                            item.error_message = None  # Clear any previous error
-                            # Set BIF path if we have a bundle hash
-                            if item.bundle_hash:
-                                from ..utils import sanitize_path
-                                bundle_file = sanitize_path(f'{item.bundle_hash[0]}/{item.bundle_hash[1::1]}.bundle')
-                                bundle_path = sanitize_path(os.path.join(
-                                    scheduler.config.plex_config_folder if scheduler.config else '/config/plex',
-                                    'Media', 'localhost', bundle_file
-                                ))
-                                bif_path = sanitize_path(os.path.join(bundle_path, 'Contents', 'Indexes', 'index-sd.bif'))
-                                item.bif_path = bif_path
-                            logger.info(f"Marked item {item_key} ({item.title}) as COMPLETED in database")
-                        elif progress > 0:
-                            # Only update to PROCESSING if not already COMPLETED
-                            # (prevents race condition where completion update comes after this)
-                            if item.status != PreviewStatus.COMPLETED:
-                                item.status = PreviewStatus.PROCESSING
-                            item.progress = int(progress)
-                            # Store media file path if available
-                            if media_file:
-                                item.file_path = media_file
-                        session.add(item)
-                        session.commit()
-            except Exception as e:
-                logger.error(f"Failed to update DB progress for {item_key}: {e}")
+
+            # Retry logic for database lock errors
+            max_retries = 3
+            retry_delay = 0.1  # Start with 100ms
+
+            for attempt in range(max_retries):
+                try:
+                    with Session(engine) as session:
+                        item = session.get(MediaItem, int(item_key))
+                        if not item:
+                            logger.warning(f"DbProgressManager: Item {item_key} not found in database, cannot update status")
+                            return
+                        if item:
+                            if data.get('failed'):
+                                # Task failed - check if it's slow processing
+                                if error_message and "too slow" in error_message.lower():
+                                    item.status = PreviewStatus.SLOW_FAILED
+                                    logger.info(f"Marked item {item_key} ({item.title}) as SLOW_FAILED in database: {error_message}")
+                                else:
+                                    item.status = PreviewStatus.FAILED
+                                    logger.info(f"Marked item {item_key} ({item.title}) as FAILED in database: {error_message}")
+                                item.progress = int(progress) if progress > 0 else item.progress
+                                item.error_message = error_message
+                            elif progress >= 100:
+                                # Only mark as COMPLETED if not failed
+                                item.status = PreviewStatus.COMPLETED
+                                item.progress = 100
+                                item.error_message = None  # Clear any previous error
+                                # Set BIF path if we have a bundle hash
+                                if item.bundle_hash:
+                                    from ..utils import sanitize_path
+                                    bundle_file = sanitize_path(f'{item.bundle_hash[0]}/{item.bundle_hash[1::1]}.bundle')
+                                    bundle_path = sanitize_path(os.path.join(
+                                        scheduler.config.plex_config_folder if scheduler.config else '/config/plex',
+                                        'Media', 'localhost', bundle_file
+                                    ))
+                                    bif_path = sanitize_path(os.path.join(bundle_path, 'Contents', 'Indexes', 'index-sd.bif'))
+                                    item.bif_path = bif_path
+                                logger.info(f"Marked item {item_key} ({item.title}) as COMPLETED in database")
+                            elif progress > 0:
+                                # Only update to PROCESSING if not already COMPLETED
+                                # (prevents race condition where completion update comes after this)
+                                if item.status != PreviewStatus.COMPLETED:
+                                    item.status = PreviewStatus.PROCESSING
+                                item.progress = int(progress)
+                                # Store media file path if available
+                                if media_file:
+                                    item.file_path = media_file
+                            session.add(item)
+                            session.commit()
+                    break  # Success, exit retry loop
+
+                except Exception as e:
+                    # Check if it's a database lock error
+                    if "database is locked" in str(e).lower() and attempt < max_retries - 1:
+                        logger.debug(f"Database locked for item {item_key}, retrying in {retry_delay}s (attempt {attempt + 1}/{max_retries})")
+                        time.sleep(retry_delay)
+                        retry_delay *= 2  # Exponential backoff
+                    else:
+                        # Final attempt failed or non-lock error
+                        if attempt == max_retries - 1:
+                            logger.warning(f"Failed to update DB progress for {item_key} after {max_retries} attempts: {e}")
+                        else:
+                            logger.error(f"Failed to update DB progress for {item_key}: {e}")
+                        break
 
     def update_main_progress(self, completed, total):
         pass

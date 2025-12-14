@@ -7,8 +7,8 @@ import os
 sqlite_file_name = os.environ.get("DB_PATH", "plex_previews.db")
 DATABASE_URL = f"sqlite:///{sqlite_file_name}"
 
-# Increase timeout to reduce locking errors
-engine = create_engine(DATABASE_URL, echo=False, connect_args={"check_same_thread": False, "timeout": 15})
+# Increase timeout to reduce locking errors (30 seconds for high concurrency)
+engine = create_engine(DATABASE_URL, echo=False, connect_args={"check_same_thread": False, "timeout": 30})
 
 def setup_sqlite(dbapi_connection, connection_record):
     cursor = dbapi_connection.cursor()
@@ -66,6 +66,13 @@ def create_db_and_tables():
     try:
         with engine.connect() as connection:
             connection.execute(text("ALTER TABLE appsettings ADD COLUMN scheduler_loop_interval INTEGER DEFAULT 5"))
+    except Exception:
+        pass
+
+    # Migration: Add sync_interval to AppSettings (default: 6 hours = 21600 seconds)
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("ALTER TABLE appsettings ADD COLUMN sync_interval INTEGER DEFAULT 21600"))
     except Exception:
         pass
 
