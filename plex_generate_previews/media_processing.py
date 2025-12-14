@@ -329,29 +329,37 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
         ffmpeg_output_lines = []
         line_count = 0
 
-        # Track slow processing (speed < 1x for > 5 minutes)
-        slow_start_time = None
+        # Track average processing speed over time
+        speed_samples = []  # List of (timestamp, speed) tuples
         SLOW_THRESHOLD = 5 * 60  # 5 minutes in seconds
+        SPEED_WINDOW = 5 * 60  # 5 minute window for average calculation
 
         def speed_capture_callback(progress_percent, current_duration, total_duration_param, speed_value,
                                   remaining_time=None, frame=0, fps=0, q=0, size=0, time_str="00:00:00.00", bitrate=0):
-            nonlocal speed_local, slow_start_time
+            nonlocal speed_local, speed_samples
             if speed_value and speed_value != "0.0x":
                 speed_local = speed_value
 
-                # Track slow processing
+                # Track average processing speed
                 try:
                     # Parse speed value (e.g., "0.5x" -> 0.5)
                     speed_num = float(speed_value.replace('x', ''))
-                    if speed_num < 1.0:
-                        if slow_start_time is None:
-                            slow_start_time = time.time()
-                        elif time.time() - slow_start_time > SLOW_THRESHOLD:
-                            # Been slow for more than 5 minutes
-                            raise SlowProcessingError(f"Processing too slow (< 1x for > 5 minutes): {video_file}")
-                    else:
-                        # Speed is acceptable, reset timer
-                        slow_start_time = None
+                    current_time = time.time()
+
+                    # Add current speed sample
+                    speed_samples.append((current_time, speed_num))
+
+                    # Remove samples older than the window
+                    cutoff_time = current_time - SPEED_WINDOW
+                    speed_samples = [(t, s) for t, s in speed_samples if t > cutoff_time]
+
+                    # Calculate average speed if we have enough data (at least 5 minutes of samples)
+                    if speed_samples and (current_time - speed_samples[0][0]) >= SLOW_THRESHOLD:
+                        avg_speed = sum(s for _, s in speed_samples) / len(speed_samples)
+                        if avg_speed < 1.0:
+                            raise SlowProcessingError(
+                                f"Processing too slow (average {avg_speed:.2f}x over 5 minutes): {video_file}"
+                            )
                 except (ValueError, AttributeError):
                     # If speed parsing fails, ignore
                     pass
