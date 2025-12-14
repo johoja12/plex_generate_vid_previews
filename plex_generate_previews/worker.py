@@ -53,6 +53,7 @@ class Worker:
         # Progress tracking
         self.progress_percent = 0
         self.speed = "0.0x"
+        self.avg_speed = "0.0x"  # 5-minute average speed
         self.current_duration = 0.0
         self.total_duration = 0.0
         self.remaining_time = 0.0  # Remaining time calculated from FFmpeg data
@@ -630,7 +631,8 @@ class WorkerPool:
                     logger.debug(f"Busy workers: {len(busy_workers)}/{len(self.workers)}")
                     for worker in busy_workers:
                         with self._progress_lock:
-                            task_info = f"{worker.worker_id}: {worker.task_title} ({worker.progress_percent}%)"
+                            avg_speed_display = f", avg: {worker.avg_speed}" if worker.avg_speed and worker.avg_speed != "0.0x" else ""
+                            task_info = f"{worker.worker_id}: {worker.task_title} ({worker.progress_percent}%{avg_speed_display})"
                             if worker.current_thread and worker.current_thread.is_alive():
                                 logger.debug(f"  {task_info} [thread alive]")
                             else:
@@ -754,7 +756,7 @@ class WorkerPool:
         logger.info(f'Processing complete: {", ".join(stats_parts)}')
     
     def _update_worker_progress(self, worker, progress_percent, current_duration, total_duration, speed=None,
-                               remaining_time=None, frame=0, fps=0, q=0, size=0, time_str="00:00:00.00", bitrate=0, media_file=None, failed=False, error_message=None):
+                               remaining_time=None, frame=0, fps=0, q=0, size=0, time_str="00:00:00.00", bitrate=0, media_file=None, failed=False, error_message=None, avg_speed=None):
         """Update worker progress data from callback."""
         # Use thread-safe updates to prevent race conditions
         with self._progress_lock:
@@ -767,13 +769,15 @@ class WorkerPool:
                     worker.error_message = error_message
             if speed:
                 worker.speed = speed
+            if avg_speed:
+                worker.avg_speed = avg_speed
             if remaining_time is not None:
                 worker.remaining_time = remaining_time
 
             # Store media file path if provided
             if media_file:
                 worker.media_file = media_file
-            
+
             # Store FFmpeg data for display
             worker.frame = frame
             worker.fps = fps

@@ -337,6 +337,8 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
         def speed_capture_callback(progress_percent, current_duration, total_duration_param, speed_value,
                                   remaining_time=None, frame=0, fps=0, q=0, size=0, time_str="00:00:00.00", bitrate=0):
             nonlocal speed_local, speed_samples
+            avg_speed_value = None  # Default to None if not calculated yet
+
             if speed_value and speed_value != "0.0x":
                 speed_local = speed_value
 
@@ -356,17 +358,22 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
                     # Calculate average speed if we have enough data (at least 5 minutes of samples)
                     if speed_samples and (current_time - speed_samples[0][0]) >= SLOW_THRESHOLD:
                         avg_speed = sum(s for _, s in speed_samples) / len(speed_samples)
+                        avg_speed_value = f"{avg_speed:.2f}x"
                         if avg_speed < 1.0:
                             raise SlowProcessingError(
                                 f"Processing too slow (average {avg_speed:.2f}x over 5 minutes): {video_file}"
                             )
+                    elif speed_samples:
+                        # Calculate average even if we haven't reached 5 minutes yet
+                        avg_speed = sum(s for _, s in speed_samples) / len(speed_samples)
+                        avg_speed_value = f"{avg_speed:.2f}x"
                 except (ValueError, AttributeError):
                     # If speed parsing fails, ignore
                     pass
 
             if progress_callback:
                 progress_callback(progress_percent, current_duration, total_duration_param, speed_value,
-                                remaining_time, frame, fps, q, size, time_str, bitrate, media_file=video_file)
+                                remaining_time, frame, fps, q, size, time_str, bitrate, media_file=video_file, avg_speed=avg_speed_value)
 
         time.sleep(0.02)
         try:
