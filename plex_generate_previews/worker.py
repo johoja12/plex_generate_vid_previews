@@ -633,16 +633,20 @@ class WorkerPool:
             # Prioritize fallback queue for CPU workers, then assign from main queue
             # Only assign if not stopped
             if not (stop_condition and stop_condition()):
-                while True:
+                attempted_workers = 0
+                max_attempts = len(self.workers) + 1  # Try all workers plus one for fallback queue
+
+                while attempted_workers < max_attempts:
                     # If main queue is empty, only look for CPU workers (to process fallback queue)
                     cpu_only = not media_queue
                     available_worker = self._find_available_worker(cpu_only=cpu_only)
                     if not available_worker:
                         break
-                    
+
                     # For CPU workers, try fallback queue first (codec error fallback)
                     if available_worker.worker_type == 'CPU':
                         if self._assign_fallback_task(available_worker, config, plex, title_max_width):
+                            attempted_workers = 0  # Reset counter on successful assignment
                             continue
                         # No fallback items - if main queue is also empty, break
                         if not media_queue:
@@ -653,9 +657,12 @@ class WorkerPool:
                     if queue_empty:
                         # Queue is empty, stop trying to assign
                         break
-                    if not assigned:
-                        # Duplicate detected, try next available worker
-                        continue
+                    if assigned:
+                        # Successfully assigned, reset counter
+                        attempted_workers = 0
+                    else:
+                        # Duplicate detected or other failure, increment counter
+                        attempted_workers += 1
             
             # Check exit condition if stopped and idle
             if stop_condition and stop_condition() and not self.has_busy_workers():
