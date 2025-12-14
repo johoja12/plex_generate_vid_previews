@@ -457,15 +457,17 @@ class WorkerPool:
             return False
     
     def _assign_main_queue_task(self, worker: 'Worker', media_queue: List[tuple],
-                                config: Config, plex, title_max_width: int) -> bool:
+                                config: Config, plex, title_max_width: int) -> tuple:
         """
         Assign a task from main queue to a worker.
 
         Returns:
-            True if task was assigned, False if queue was empty
+            Tuple of (assigned: bool, queue_empty: bool)
+            - assigned: True if task was successfully assigned
+            - queue_empty: True if queue is empty (should break assignment loop)
         """
         if not media_queue:
-            return False
+            return (False, True)  # Not assigned, queue empty
 
         item_key, media_title, media_type = media_queue.pop(0)
 
@@ -473,7 +475,9 @@ class WorkerPool:
         for other_worker in self.workers:
             if other_worker != worker and other_worker.current_task == item_key:
                 logger.warning(f"Skipping duplicate assignment: {media_title} (item {item_key}) already being processed by worker {other_worker.worker_id}")
-                return False
+                # Put item back at end of queue to retry later
+                media_queue.append((item_key, media_title, media_type))
+                return (False, False)  # Not assigned, but queue not empty - try next worker
 
         progress_callback = partial(self._update_worker_progress, worker)
         cpu_fallback_queue = self.cpu_fallback_queue if worker.worker_type == 'GPU' else None
@@ -486,7 +490,7 @@ class WorkerPool:
             title_max_width=title_max_width,
             cpu_fallback_queue=cpu_fallback_queue
         )
-        return True
+        return (True, False)  # Assigned successfully
     
     def _check_fallback_queue_empty(self) -> bool:
         """
@@ -643,10 +647,15 @@ class WorkerPool:
                         # No fallback items - if main queue is also empty, break
                         if not media_queue:
                             break
-                    
+
                     # Assign from main queue (for GPU workers or when main queue has items)
-                    if not self._assign_main_queue_task(available_worker, media_queue, config, plex, title_max_width):
+                    assigned, queue_empty = self._assign_main_queue_task(available_worker, media_queue, config, plex, title_max_width)
+                    if queue_empty:
+                        # Queue is empty, stop trying to assign
                         break
+                    if not assigned:
+                        # Duplicate detected, try next available worker
+                        continue
             
             # Check exit condition if stopped and idle
             if stop_condition and stop_condition() and not self.has_busy_workers():
