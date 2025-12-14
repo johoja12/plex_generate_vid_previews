@@ -80,6 +80,9 @@
                 <button @click="bulkAction('mark_completed')" class="text-xs bg-green-900/50 hover:bg-green-900 text-green-200 px-3 py-2 rounded font-bold">
                     ✓ Mark as Completed
                 </button>
+                <button @click="bulkAction('mark_failed')" class="text-xs bg-red-800/50 hover:bg-red-800 text-red-200 px-3 py-2 rounded font-bold">
+                    ✗ Mark as Failed
+                </button>
                 <button @click="clearSelection" class="text-xs bg-gray-700 hover:bg-gray-600 text-white px-3 py-2 rounded">
                     Clear Selection
                 </button>
@@ -181,9 +184,14 @@
                                             ⟳ Regen
                                         </button>
                                     </template>
-                                    <template x-if="item.status !== 'completed'">
+                                    <template x-if="item.status !== 'completed' && item.status !== 'failed'">
                                         <button @click="markCompleted(item.id)" class="text-xs bg-green-900/50 hover:bg-green-900 text-green-200 px-2 py-1 rounded" title="Mark as Completed">
                                             ✓ Done
+                                        </button>
+                                    </template>
+                                    <template x-if="item.status !== 'failed'">
+                                        <button @click="markFailed(item.id)" class="text-xs bg-red-800/50 hover:bg-red-800 text-red-200 px-2 py-1 rounded" title="Mark as Failed">
+                                            ✗ Failed
                                         </button>
                                     </template>
                                 </div>
@@ -471,6 +479,22 @@
                         }
                     } catch (e) {
                         console.error('Error resetting item:', e);
+                    }
+                },
+
+                async markFailed(itemId) {
+                    try {
+                        const res = await fetch(`/api/items/${itemId}/mark-failed`, {
+                            method: 'POST'
+                        });
+                        if (res.ok) {
+                            await this.fetchItems();
+                            await this.fetchStats();
+                        } else {
+                            console.error('Failed to mark item as failed:', await res.text());
+                        }
+                    } catch (e) {
+                        console.error('Error marking item as failed:', e);
                     }
                 },
 

@@ -137,10 +137,11 @@ async def settings_page(request: Request, user: Optional[str] = Depends(get_curr
 async def get_settings(session: Session = Depends(get_session), user: str = Depends(login_required)):
     settings = session.get(AppSettings, 1)
     if not settings:
-        return {"gpu_threads": 1, "cpu_threads": 1}
+        return {"gpu_threads": 1, "cpu_threads": 1, "sync_interval": 21600}
     return {
         "gpu_threads": settings.gpu_threads,
         "cpu_threads": settings.cpu_threads,
+        "sync_interval": settings.sync_interval,
         "plex_url": settings.plex_url,
         "plex_server_name": settings.plex_server_name,
         "plex_client_identifier": settings.plex_client_identifier
@@ -168,6 +169,10 @@ async def update_settings(
         settings.gpu_threads = int(payload["gpu_threads"])
     if "cpu_threads" in payload:
         settings.cpu_threads = int(payload["cpu_threads"])
+
+    # Update sync interval
+    if "sync_interval" in payload:
+        settings.sync_interval = int(payload["sync_interval"])
 
     # Update password if provided
     if "new_password" in payload and payload["new_password"]:
@@ -577,6 +582,23 @@ async def reset_to_missing(
 
     return {"message": "Item reset to missing"}
 
+@app.post("/api/items/{item_id}/mark-failed")
+async def mark_failed_item(
+    item_id: int,
+    session: Session = Depends(get_session),
+    user: str = Depends(login_required)
+):
+    item = session.get(MediaItem, item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    item.status = PreviewStatus.FAILED
+    item.progress = 0
+    session.add(item)
+    session.commit()
+
+    return {"message": "Item marked as failed"}
+
 @app.post("/api/items/bulk-action")
 async def bulk_action(
     payload: dict = Body(...),
@@ -589,7 +611,7 @@ async def bulk_action(
     if not item_ids:
         raise HTTPException(status_code=400, detail="No items specified")
 
-    if action not in ["reset", "mark_completed"]:
+    if action not in ["reset", "mark_completed", "mark_failed"]:
         raise HTTPException(status_code=400, detail="Invalid action")
 
     updated_count = 0
@@ -602,6 +624,9 @@ async def bulk_action(
             elif action == "mark_completed":
                 item.status = PreviewStatus.COMPLETED
                 item.progress = 100
+            elif action == "mark_failed":
+                item.status = PreviewStatus.FAILED
+                item.progress = 0
             session.add(item)
             updated_count += 1
 
