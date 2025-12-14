@@ -891,21 +891,53 @@ class Scheduler:
             return
 
         logger.debug(f"Processing batch of {len(process_list)} items")
-        
+
         # Instantiate DbProgressManager
         pm = DbProgressManager()
-        
+
         # Get Plex server again (fresh connection)
         plex = plex_server(self.config)
-        
-        # Run processing
-        # Note: This blocks until batch is done
+
+        # Define callback to fetch more items when queue runs low
+        def fetch_more_items():
+            """Fetch more items from database when queue is running low."""
+            if self.paused:
+                return []
+
+            with Session(engine) as session:
+                # Fetch items that are MISSING or QUEUED (not already being processed)
+                statement = select(MediaItem).where(
+                    col(MediaItem.status).in_([PreviewStatus.MISSING, PreviewStatus.QUEUED])
+                ).order_by(MediaItem.added_at.desc(), MediaItem.queue_order.asc()).limit(batch_size)
+
+                items = session.exec(statement).all()
+
+                if not items:
+                    return []
+
+                # Mark items as QUEUED and prepare for processing
+                new_items = []
+                for item in items:
+                    if item.status == PreviewStatus.MISSING:
+                        item.status = PreviewStatus.QUEUED
+                        session.add(item)
+                    new_items.append((str(item.id), item.title, item.media_type))
+
+                session.commit()
+
+                if new_items:
+                    logger.info(f"Dynamically fetched {len(new_items)} more items for processing")
+
+                return new_items
+
+        # Run processing with dynamic queue refilling
         self.worker_pool.process_items(
-            process_list, 
-            self.config, 
-            plex, 
+            process_list,
+            self.config,
+            plex,
             pm,
-            stop_condition=lambda: self.paused
+            stop_condition=lambda: self.paused,
+            fetch_more_items=fetch_more_items
         )
         
         # Post-processing: Ensure all items that should be completed are marked as completed

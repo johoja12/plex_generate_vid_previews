@@ -506,12 +506,12 @@ class WorkerPool:
         except queue.Empty:
             return True
     
-    def process_items(self, media_items: List[tuple], config: Config, plex, progress_manager: ProgressManager, title_max_width: int = 20, library_name: str = "", stop_condition=None) -> None:
+    def process_items(self, media_items: List[tuple], config: Config, plex, progress_manager: ProgressManager, title_max_width: int = 20, library_name: str = "", stop_condition=None, fetch_more_items=None) -> None:
         """
         Process all media items using available workers.
-        
+
         Uses dynamic task assignment - workers pull tasks as they become available.
-        
+
         Args:
             media_items: List of tuples (key, title, media_type) to process
             config: Configuration object
@@ -520,6 +520,7 @@ class WorkerPool:
             title_max_width: Maximum width for title display
             library_name: Name of the library section being processed
             stop_condition: Optional callable returning True if processing should stop
+            fetch_more_items: Optional callable that returns List[tuple] of more items to process
         """
         media_queue = list(media_items)  # Copy the list
         completed_tasks = 0
@@ -663,7 +664,19 @@ class WorkerPool:
                     else:
                         # Duplicate detected or other failure, increment counter
                         attempted_workers += 1
-            
+
+            # Dynamic queue refilling: fetch more items if queue is running low
+            if fetch_more_items and len(media_queue) < len(self.workers):
+                # Queue is running low, try to fetch more items
+                try:
+                    new_items = fetch_more_items()
+                    if new_items:
+                        media_queue.extend(new_items)
+                        total_items += len(new_items)
+                        logger.debug(f"Fetched {len(new_items)} more items from queue (total now: {total_items})")
+                except Exception as e:
+                    logger.error(f"Error fetching more items: {e}")
+
             # Check exit condition if stopped and idle
             if stop_condition and stop_condition() and not self.has_busy_workers():
                 logger.info("Processing paused/stopped and all workers finished.")
