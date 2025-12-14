@@ -304,6 +304,7 @@ class Worker:
         return {
             'progress_percent': self.progress_percent,
             'speed': self.speed,
+            'avg_speed': self.avg_speed,
             'task_title': self.task_title,
             'is_busy': self.is_busy,
             'current_duration': self.current_duration,

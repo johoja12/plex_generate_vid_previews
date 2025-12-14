@@ -34,6 +34,7 @@ class DbProgressManager:
         error_message = data.get('error_message')
         media_file = data.get('media_file')
         is_failed = data.get('failed', False)
+        avg_speed = data.get('avg_speed')
 
         # Debug log for failed items
         if is_failed:
@@ -75,11 +76,17 @@ class DbProgressManager:
                                     logger.info(f"Marked item {item_key} ({item.title}) as FAILED in database: {error_message}")
                                 item.progress = int(progress) if progress > 0 else item.progress
                                 item.error_message = error_message
+                                # Store final avg_speed if available
+                                if avg_speed:
+                                    item.avg_speed = avg_speed
                             elif progress >= 100:
                                 # Only mark as COMPLETED if not failed
                                 item.status = PreviewStatus.COMPLETED
                                 item.progress = 100
                                 item.error_message = None  # Clear any previous error
+                                # Store final avg_speed if available
+                                if avg_speed:
+                                    item.avg_speed = avg_speed
                                 # Set BIF path if we have a bundle hash
                                 if item.bundle_hash:
                                     from ..utils import sanitize_path
@@ -97,6 +104,9 @@ class DbProgressManager:
                                 if item.status != PreviewStatus.COMPLETED:
                                     item.status = PreviewStatus.PROCESSING
                                 item.progress = int(progress)
+                                # Store current avg_speed if available
+                                if avg_speed:
+                                    item.avg_speed = avg_speed
                                 # Store media file path if available
                                 if media_file:
                                     item.file_path = media_file

@@ -90,6 +90,13 @@ def create_db_and_tables():
     except Exception:
         pass
 
+    # Migration: Add avg_speed to MediaItem
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("ALTER TABLE mediaitem ADD COLUMN avg_speed VARCHAR"))
+    except Exception:
+        pass
+
 def get_session():
     with Session(engine) as session:
         yield session

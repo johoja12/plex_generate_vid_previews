@@ -122,6 +122,7 @@
                         <th class="pb-2">Added</th>
                         <th class="pb-2">Status</th>
                         <th class="pb-2">Progress</th>
+                        <th class="pb-2">Speed</th>
                         <th class="pb-2">Actions</th>
                     </tr>
                 </thead>
@@ -164,6 +165,14 @@
                                 </div>
                                 <span class="text-xs text-gray-400 mt-1 block" x-text="item.progress + '%'"></span>
                             </td>
+                            <td class="py-3 text-sm text-gray-400">
+                                <span x-text="item.avg_speed || '-'" :class="{
+                                    'text-green-400': item.avg_speed && parseFloat(item.avg_speed) >= 2.0,
+                                    'text-yellow-400': item.avg_speed && parseFloat(item.avg_speed) >= 1.0 && parseFloat(item.avg_speed) < 2.0,
+                                    'text-orange-400': item.avg_speed && parseFloat(item.avg_speed) >= 0.5 && parseFloat(item.avg_speed) < 1.0,
+                                    'text-red-400': item.avg_speed && parseFloat(item.avg_speed) < 0.5
+                                }"></span>
+                            </td>
                             <td class="py-3">
                                 <div class="flex space-x-2">
                                     <template x-if="item.status === 'queued' || item.status === 'missing'">
@@ -199,7 +208,7 @@
                                 </div>
                             </td>
                             <!-- Expandable details cell -->
-                            <td colspan="9" class="p-0">
+                            <td colspan="10" class="p-0">
                                 <div x-show="isExpanded(item.id)" x-collapse class="bg-gray-800 px-6 py-4 border-t border-gray-700">
                                     <div class="space-y-3 text-sm">
                                         <!-- Item ID and Bundle Hash -->
@@ -252,7 +261,7 @@
                         </tr>
                     </template>
                     <tr x-show="items.length === 0">
-                        <td colspan="9" class="py-8 text-center text-gray-500">No items found matching your criteria.</td>
+                        <td colspan="10" class="py-8 text-center text-gray-500">No items found matching your criteria.</td>
                     </tr>
                 </tbody>
             </table>
