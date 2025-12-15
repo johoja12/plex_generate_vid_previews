@@ -862,8 +862,21 @@ class Scheduler:
                                 db_item.added_at = added_at
                                 session.add(db_item)
 
+                            # Check if any parts are missing BIF files
+                            any_missing_bif = False
+                            if media_parts_json:
+                                parts_data = json.loads(media_parts_json)
+                                any_missing_bif = any(part.get('bif_path') is None for part in parts_data)
+
+                            # If item is completed but has parts without BIF files, reset to missing
+                            # This handles the case where a new version is added (e.g., 4K added to existing 1080p)
+                            if db_item.status == PreviewStatus.COMPLETED and any_missing_bif:
+                                logger.info(f"Item {item_key} ({title}) is completed but has new parts without BIF files - resetting to missing")
+                                db_item.status = PreviewStatus.MISSING
+                                db_item.progress = 0
+                                session.add(db_item)
                             # If existing item is missing/queued/processing but BIF exists, mark completed
-                            if db_item.status != PreviewStatus.COMPLETED and bif_exists:
+                            elif db_item.status != PreviewStatus.COMPLETED and bif_exists and not any_missing_bif:
                                 db_item.status = PreviewStatus.COMPLETED
                                 db_item.progress = 100
                                 session.add(db_item)
