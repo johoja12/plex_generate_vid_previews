@@ -353,7 +353,9 @@
                 },
 
                 get allSelected() {
-                    return this.items.length > 0 && this.selectedIds.length === this.items.length;
+                    // Get unique item_ids from current items
+                    const uniqueItemIds = [...new Set(this.items.map(item => item.item_id))];
+                    return uniqueItemIds.length > 0 && this.selectedIds.length === uniqueItemIds.length;
                 },
 
                 // Toast notification methods
@@ -604,7 +606,8 @@
                     if (this.allSelected) {
                         this.selectedIds = [];
                     } else {
-                        this.selectedIds = this.items.map(item => item.id);
+                        // Select unique item_ids (not composite part ids)
+                        this.selectedIds = [...new Set(this.items.map(item => item.item_id))];
                     }
                 },
 
