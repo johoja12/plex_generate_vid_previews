@@ -937,7 +937,9 @@ def process_item(item_key: str, gpu: Optional[str], gpu_device_path: Optional[st
                     logger.error(f'Error {type(e).__name__} deleting index file {media_file}: {str(e)}')
                     continue
             else:
-                # BIF already exists and we're not regenerating - mark as successfully processed
+                # BIF already exists and we're not regenerating - SKIP this part
+                # This ensures only missing BIF files are processed when an item has multiple parts
+                # (e.g., if 1080p BIF exists, only generate 4K BIF)
                 logger.debug(f'BIF already exists, skipping generation: {index_bif}')
                 processed_any = True
                 continue

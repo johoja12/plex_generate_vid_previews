@@ -848,22 +848,24 @@ async def get_items(
                 import os
                 parts = json.loads(item.media_parts_info)
                 for idx, part in enumerate(parts):
-                    # Determine part status based on BIF existence
-                    part_status = PreviewStatus.COMPLETED if part.get('bif_path') and os.path.exists(part.get('bif_path')) else PreviewStatus.MISSING
+                    # Determine part status based on BIF existence first
+                    bif_exists = part.get('bif_path') and os.path.exists(part.get('bif_path'))
 
-                    # If parent item is processing, this part might be processing too
-                    if item.status == PreviewStatus.PROCESSING:
-                        part_status = PreviewStatus.PROCESSING
-                    elif item.status == PreviewStatus.FAILED:
-                        part_status = PreviewStatus.FAILED
-                    elif item.status == PreviewStatus.SLOW_FAILED:
-                        part_status = PreviewStatus.SLOW_FAILED
-                    elif item.status == PreviewStatus.QUEUED:
-                        # If queued and BIF exists, mark as completed
-                        if part.get('bif_path') and os.path.exists(part.get('bif_path')):
-                            part_status = PreviewStatus.COMPLETED
-                        else:
+                    if bif_exists:
+                        # BIF exists - this part is completed regardless of parent status
+                        part_status = PreviewStatus.COMPLETED
+                    else:
+                        # BIF missing - inherit status from parent item
+                        if item.status == PreviewStatus.PROCESSING:
+                            part_status = PreviewStatus.PROCESSING
+                        elif item.status == PreviewStatus.FAILED:
+                            part_status = PreviewStatus.FAILED
+                        elif item.status == PreviewStatus.SLOW_FAILED:
+                            part_status = PreviewStatus.SLOW_FAILED
+                        elif item.status == PreviewStatus.QUEUED:
                             part_status = PreviewStatus.QUEUED
+                        else:
+                            part_status = PreviewStatus.MISSING
 
                     # Extract filename from path for part label
                     file_path = part.get('file_path', '')
