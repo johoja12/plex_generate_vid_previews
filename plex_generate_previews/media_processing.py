@@ -955,9 +955,13 @@ def process_item(item_key: str, gpu: Optional[str], gpu_device_path: Optional[st
                                   config, progress_callback)
             # Mark that we successfully processed this media part
             processed_any = True
-        except CodecNotSupportedError:
-            # Re-raise so worker can handle codec errors
-            raise
+        except CodecNotSupportedError as e:
+            # Codec error for this specific part - log and continue to next part
+            # Don't stop processing other parts just because one has an unsupported codec
+            logger.warning(f'Codec not supported for {media_file}: {str(e)}')
+            logger.warning(f'Continuing to process remaining parts of item {item_key}')
+            processing_error = e
+            continue
         except RuntimeError as e:
             # RuntimeError from _generate_and_save_bif means generation failed
             # Store error and continue to next media part
