@@ -206,6 +206,7 @@
                         <th class="pb-2 pl-2 w-10">
                             <input type="checkbox" @change="toggleSelectAll" :checked="allSelected" class="cursor-pointer">
                         </th>
+                        <th class="pb-2 w-8"></th>
                         <th class="pb-2 w-8">#</th>
                         <th class="pb-2 pl-2">Title / File</th>
                         <th class="pb-2">Type</th>
@@ -217,13 +218,19 @@
                         <th class="pb-2">Actions</th>
                     </tr>
                 </thead>
-                <tbody>
                 <template x-for="item in items" :key="item.id">
-                    <tr class="border-b border-gray-800 hover:bg-gray-700 transition" :class="{'bg-gray-800/30': item.part_index > 0}">
-                        <td class="py-3 pl-2">
-                            <input type="checkbox" :value="item.item_id" @change="toggleSelect(item.item_id)" :checked="selectedIds.includes(item.item_id)" class="cursor-pointer">
-                        </td>
-                        <td class="py-3 pl-2 text-xs text-gray-500" x-text="item.part_index + 1"></td>
+                    <tbody>
+                        <tr class="border-b border-gray-800 hover:bg-gray-700 transition" :class="{'bg-gray-800/30': item.part_index > 0}">
+                            <td class="py-3 pl-2">
+                                <input type="checkbox" :value="item.item_id" @change="toggleSelect(item.item_id)" :checked="selectedIds.includes(item.item_id)" class="cursor-pointer">
+                            </td>
+                            <td class="py-3 pl-2">
+                                <button @click="toggleExpand(item.id)" class="text-gray-400 hover:text-white transition">
+                                    <span x-show="!isExpanded(item.id)">▶</span>
+                                    <span x-show="isExpanded(item.id)">▼</span>
+                                </button>
+                            </td>
+                            <td class="py-3 pl-2 text-xs text-gray-500" x-text="item.part_index + 1"></td>
                         <td class="py-3 pl-2 font-medium">
                             <template x-if="plexClientIdentifier">
                                 <a :href="plexWebUrl(item.item_id)" target="_blank" class="hover:text-orange-400 underline" x-text="item.title"></a>
@@ -294,6 +301,68 @@
                             </div>
                         </td>
                     </tr>
+                    <!-- Expandable details row for this part -->
+                    <tr x-show="isExpanded(item.id)" x-collapse class="border-b border-gray-800">
+                        <td colspan="11" class="p-0">
+                            <div class="bg-gray-800 px-6 py-4 border-t border-gray-700">
+                                <div class="space-y-3 text-sm">
+                                    <!-- Item ID and Part Info -->
+                                    <div class="grid grid-cols-3 gap-4">
+                                        <div>
+                                            <span class="text-gray-400 font-semibold">Item ID:</span>
+                                            <span class="text-gray-200 ml-2" x-text="item.item_id"></span>
+                                        </div>
+                                        <div>
+                                            <span class="text-gray-400 font-semibold">Part Index:</span>
+                                            <span class="text-gray-200 ml-2" x-text="item.part_index + 1"></span>
+                                        </div>
+                                        <div>
+                                            <span class="text-gray-400 font-semibold">Bundle Hash:</span>
+                                            <span class="text-gray-200 ml-2 font-mono text-xs" x-text="item.bundle_hash || 'N/A'"></span>
+                                        </div>
+                                    </div>
+
+                                    <!-- Error Details (for failed items) -->
+                                    <div x-show="item.status === 'failed' || item.status === 'slow_failed'" class="bg-red-900/20 border border-red-700 rounded p-3">
+                                        <h4 class="font-bold text-red-400 mb-2">❌ Error Details:</h4>
+                                        <p class="text-red-300 font-mono text-xs break-all" x-text="item.error_message || 'No error message available'"></p>
+                                    </div>
+
+                                    <!-- File Paths -->
+                                    <div class="space-y-2">
+                                        <!-- Media File Path -->
+                                        <div>
+                                            <span class="text-gray-400 font-semibold">Media File Path:</span>
+                                            <div class="text-gray-200 font-mono text-xs mt-1 break-all bg-gray-900 p-2 rounded" x-text="item.file_path || 'Not yet available'"></div>
+                                        </div>
+
+                                        <!-- BIF File Path -->
+                                        <div>
+                                            <span class="text-gray-400 font-semibold">BIF File Path:</span>
+                                            <div class="font-mono text-xs mt-1 break-all bg-gray-900 p-2 rounded" :class="item.bif_path ? 'text-green-300' : 'text-gray-500'" x-text="item.bif_path || 'Not yet generated'"></div>
+                                        </div>
+                                    </div>
+
+                                    <!-- Processing Info -->
+                                    <div class="grid grid-cols-3 gap-4 text-xs">
+                                        <div>
+                                            <span class="text-gray-400">Progress:</span>
+                                            <span class="text-gray-200 ml-2" x-text="item.progress + '%'"></span>
+                                        </div>
+                                        <div>
+                                            <span class="text-gray-400">Media Type:</span>
+                                            <span class="text-gray-200 ml-2 capitalize" x-text="item.media_type"></span>
+                                        </div>
+                                        <div>
+                                            <span class="text-gray-400">Library:</span>
+                                            <span class="text-gray-200 ml-2" x-text="item.library_name"></span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </td>
+                    </tr>
+                    </tbody>
                 </template>
                 <tbody>
                     <tr x-show="items.length === 0">
@@ -342,6 +411,7 @@
                 paused: false,
                 plexClientIdentifier: '', // Store Plex server's client identifier
                 selectedIds: [], // Track selected item IDs
+                expandedRows: [], // Track which rows are expanded
                 toasts: [], // Toast notifications
                 toastId: 0, // Auto-incrementing toast ID
                 confirmDialog: { // Confirmation dialog state
@@ -390,6 +460,20 @@
                         onConfirm,
                         onCancel
                     };
+                },
+
+                // Expandable row methods
+                isExpanded(itemId) {
+                    return this.expandedRows.includes(itemId);
+                },
+
+                toggleExpand(itemId) {
+                    const index = this.expandedRows.indexOf(itemId);
+                    if (index > -1) {
+                        this.expandedRows.splice(index, 1);
+                    } else {
+                        this.expandedRows.push(itemId);
+                    }
                 },
 
                 init() {
