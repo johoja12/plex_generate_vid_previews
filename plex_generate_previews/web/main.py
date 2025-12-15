@@ -58,7 +58,7 @@ def get_current_user(token: Optional[str] = Cookie(None)):
     if not token:
         return None
     try:
-        username = serializer.loads(token, salt="login", max_age=86400) # 1 day
+        username = serializer.loads(token, salt="login", max_age=31536000) # 1 year (365 days)
         return username
     except:
         return None
@@ -115,7 +115,7 @@ async def login(
     if is_valid:
         response = RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
         token = create_token(username)
-        response.set_cookie(key="token", value=token, httponly=True)
+        response.set_cookie(key="token", value=token, httponly=True, max_age=31536000)  # 1 year
         return response
     else:
         return RedirectResponse(url="/login?error=Invalid credentials", status_code=status.HTTP_303_SEE_OTHER)
