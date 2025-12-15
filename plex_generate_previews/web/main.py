@@ -838,13 +838,106 @@ async def get_items(
     query = query.offset(offset).limit(limit)
     
     items = session.exec(query).all()
-    
+
+    # Expand items to show one row per media part
+    expanded_items = []
+    for item in items:
+        if item.media_parts_info:
+            try:
+                import json
+                import os
+                parts = json.loads(item.media_parts_info)
+                for idx, part in enumerate(parts):
+                    # Determine part status based on BIF existence
+                    part_status = PreviewStatus.COMPLETED if part.get('bif_path') and os.path.exists(part.get('bif_path')) else PreviewStatus.MISSING
+
+                    # If parent item is processing, this part might be processing too
+                    if item.status == PreviewStatus.PROCESSING:
+                        part_status = PreviewStatus.PROCESSING
+                    elif item.status == PreviewStatus.FAILED:
+                        part_status = PreviewStatus.FAILED
+                    elif item.status == PreviewStatus.SLOW_FAILED:
+                        part_status = PreviewStatus.SLOW_FAILED
+                    elif item.status == PreviewStatus.QUEUED:
+                        # If queued and BIF exists, mark as completed
+                        if part.get('bif_path') and os.path.exists(part.get('bif_path')):
+                            part_status = PreviewStatus.COMPLETED
+                        else:
+                            part_status = PreviewStatus.QUEUED
+
+                    # Extract filename from path for part label
+                    file_path = part.get('file_path', '')
+                    filename = os.path.basename(file_path) if file_path else f"Part {idx + 1}"
+
+                    expanded_items.append({
+                        "id": f"{item.id}_part{idx}",  # Unique ID per part
+                        "item_id": item.id,  # Original item ID
+                        "part_index": idx,
+                        "title": f"{item.title} - {filename}",
+                        "media_type": item.media_type,
+                        "library_name": item.library_name,
+                        "file_path": part.get('file_path'),
+                        "bundle_hash": part.get('bundle_hash'),
+                        "bif_path": part.get('bif_path'),
+                        "status": part_status,
+                        "progress": item.progress,  # Share item's progress
+                        "avg_speed": item.avg_speed,  # Share item's speed
+                        "added_at": item.added_at,
+                        "updated_at": item.updated_at,
+                        "error_message": item.error_message if part_status in [PreviewStatus.FAILED, PreviewStatus.SLOW_FAILED] else None,
+                        "is_multi_part": len(parts) > 1
+                    })
+            except (json.JSONDecodeError, Exception) as e:
+                logger.error(f"Error parsing media_parts_info for item {item.id}: {e}")
+                # Fallback to single row if parsing fails
+                expanded_items.append({
+                    "id": item.id,
+                    "item_id": item.id,
+                    "part_index": 0,
+                    "title": item.title,
+                    "media_type": item.media_type,
+                    "library_name": item.library_name,
+                    "file_path": item.file_path,
+                    "bundle_hash": item.bundle_hash,
+                    "bif_path": item.bif_path,
+                    "status": item.status,
+                    "progress": item.progress,
+                    "avg_speed": item.avg_speed,
+                    "added_at": item.added_at,
+                    "updated_at": item.updated_at,
+                    "error_message": item.error_message,
+                    "is_multi_part": False
+                })
+        else:
+            # No parts info, use item directly
+            expanded_items.append({
+                "id": item.id,
+                "item_id": item.id,
+                "part_index": 0,
+                "title": item.title,
+                "media_type": item.media_type,
+                "library_name": item.library_name,
+                "file_path": item.file_path,
+                "bundle_hash": item.bundle_hash,
+                "bif_path": item.bif_path,
+                "status": item.status,
+                "progress": item.progress,
+                "avg_speed": item.avg_speed,
+                "added_at": item.added_at,
+                "updated_at": item.updated_at,
+                "error_message": item.error_message,
+                "is_multi_part": False
+            })
+
+    # Update total count to reflect expanded parts
+    expanded_total = len(expanded_items)
+
     return {
-        "items": items,
-        "total": total,
+        "items": expanded_items,
+        "total": expanded_total,
         "page": page,
         "limit": limit,
-        "pages": (total + limit - 1) // limit if limit > 0 else 1
+        "pages": (expanded_total + limit - 1) // limit if limit > 0 else 1
     }
 
 @app.get("/api/items/all-with-hash-status")
