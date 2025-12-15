@@ -217,177 +217,177 @@
                         <th class="pb-2">Actions</th>
                     </tr>
                 </thead>
-                <tbody>
-                    <template x-for="item in items" :key="item.id">
-                        <>
-                            <!-- Main row -->
-                            <tr class="border-b border-gray-800 hover:bg-gray-700 transition">
-                                <td class="py-3 pl-2">
-                                    <input type="checkbox" :value="item.id" @change="toggleSelect(item.id)" :checked="selectedIds.includes(item.id)" class="cursor-pointer">
-                                </td>
-                                <td class="py-3 pl-2">
-                                    <button @click="toggleExpand(item.id)" class="text-gray-400 hover:text-white transition">
-                                        <span x-show="!isExpanded(item.id)">▶</span>
-                                        <span x-show="isExpanded(item.id)">▼</span>
-                                    </button>
-                                </td>
-                                <td class="py-3 pl-2 font-medium">
-                                    <template x-if="plexClientIdentifier">
-                                        <a :href="plexWebUrl(item.id)" target="_blank" class="hover:text-orange-400 underline" x-text="item.title"></a>
+                <template x-for="item in items" :key="item.id">
+                    <tbody>
+                        <!-- Main row -->
+                        <tr class="border-b border-gray-800 hover:bg-gray-700 transition">
+                            <td class="py-3 pl-2">
+                                <input type="checkbox" :value="item.id" @change="toggleSelect(item.id)" :checked="selectedIds.includes(item.id)" class="cursor-pointer">
+                            </td>
+                            <td class="py-3 pl-2">
+                                <button @click="toggleExpand(item.id)" class="text-gray-400 hover:text-white transition">
+                                    <span x-show="!isExpanded(item.id)">▶</span>
+                                    <span x-show="isExpanded(item.id)">▼</span>
+                                </button>
+                            </td>
+                            <td class="py-3 pl-2 font-medium">
+                                <template x-if="plexClientIdentifier">
+                                    <a :href="plexWebUrl(item.id)" target="_blank" class="hover:text-orange-400 underline" x-text="item.title"></a>
+                                </template>
+                                <template x-if="!plexClientIdentifier">
+                                    <span class="text-gray-400" x-text="item.title" title="Plex server not configured - cannot link to app.plex.tv"></span>
+                                </template>
+                            </td>
+                            <td class="py-3 capitalize text-sm text-gray-400" x-text="item.media_type"></td>
+                            <td class="py-3 text-sm text-gray-400" x-text="item.library_name"></td>
+                            <td class="py-3 text-sm text-gray-400" x-text="formatDate(item.added_at)"></td>
+                            <td class="py-3">
+                                <span :class="{
+                                    'text-green-500': item.status === 'completed',
+                                    'text-yellow-500': item.status === 'processing',
+                                    'text-orange-500': item.status === 'queued',
+                                    'text-red-500': item.status === 'missing',
+                                    'text-red-700': item.status === 'failed',
+                                    'text-purple-500': item.status === 'slow_failed'
+                                }" x-text="item.status.replace('_', ' ')" class="uppercase text-xs font-bold bg-gray-900 px-2 py-1 rounded"></span>
+                            </td>
+                            <td class="py-3 pr-2">
+                                <div class="w-24 bg-gray-600 rounded-full h-2.5 relative overflow-hidden">
+                                    <div class="bg-blue-600 h-2.5 rounded-full transition-all duration-500" :style="'width: ' + item.progress + '%'"></div>
+                                </div>
+                                <span class="text-xs text-gray-400 mt-1 block" x-text="item.progress + '%'"></span>
+                            </td>
+                            <td class="py-3 text-sm text-gray-400">
+                                <span x-text="item.avg_speed || '-'" :class="{
+                                    'text-green-400': item.avg_speed && parseFloat(item.avg_speed) >= 2.0,
+                                    'text-yellow-400': item.avg_speed && parseFloat(item.avg_speed) >= 1.0 && parseFloat(item.avg_speed) < 2.0,
+                                    'text-orange-400': item.avg_speed && parseFloat(item.avg_speed) >= 0.5 && parseFloat(item.avg_speed) < 1.0,
+                                    'text-red-400': item.avg_speed && parseFloat(item.avg_speed) < 0.5
+                                }"></span>
+                            </td>
+                            <td class="py-3">
+                                <div class="flex space-x-2">
+                                    <template x-if="item.status === 'queued' || item.status === 'missing'">
+                                        <button @click="moveItem(item.id, 'top')" class="text-xs bg-gray-700 hover:bg-gray-600 text-white px-2 py-1 rounded" title="Move to Top">
+                                            ▲ Top
+                                        </button>
                                     </template>
-                                    <template x-if="!plexClientIdentifier">
-                                        <span class="text-gray-400" x-text="item.title" title="Plex server not configured - cannot link to app.plex.tv"></span>
+                                    <template x-if="item.status === 'processing'">
+                                        <button @click="moveItem(item.id, 'reset')" class="text-xs bg-red-900/50 hover:bg-red-900 text-red-200 px-2 py-1 rounded" title="Reset Stuck Item">
+                                            ⟳ Reset
+                                        </button>
                                     </template>
-                                </td>
-                                <td class="py-3 capitalize text-sm text-gray-400" x-text="item.media_type"></td>
-                                <td class="py-3 text-sm text-gray-400" x-text="item.library_name"></td>
-                                <td class="py-3 text-sm text-gray-400" x-text="formatDate(item.added_at)"></td>
-                                <td class="py-3">
-                                    <span :class="{
-                                        'text-green-500': item.status === 'completed',
-                                        'text-yellow-500': item.status === 'processing',
-                                        'text-orange-500': item.status === 'queued',
-                                        'text-red-500': item.status === 'missing',
-                                        'text-red-700': item.status === 'failed',
-                                        'text-purple-500': item.status === 'slow_failed'
-                                    }" x-text="item.status.replace('_', ' ')" class="uppercase text-xs font-bold bg-gray-900 px-2 py-1 rounded"></span>
-                                </td>
-                                <td class="py-3 pr-2">
-                                    <div class="w-24 bg-gray-600 rounded-full h-2.5 relative overflow-hidden">
-                                        <div class="bg-blue-600 h-2.5 rounded-full transition-all duration-500" :style="'width: ' + item.progress + '%'"></div>
-                                    </div>
-                                    <span class="text-xs text-gray-400 mt-1 block" x-text="item.progress + '%'"></span>
-                                </td>
-                                <td class="py-3 text-sm text-gray-400">
-                                    <span x-text="item.avg_speed || '-'" :class="{
-                                        'text-green-400': item.avg_speed && parseFloat(item.avg_speed) >= 2.0,
-                                        'text-yellow-400': item.avg_speed && parseFloat(item.avg_speed) >= 1.0 && parseFloat(item.avg_speed) < 2.0,
-                                        'text-orange-400': item.avg_speed && parseFloat(item.avg_speed) >= 0.5 && parseFloat(item.avg_speed) < 1.0,
-                                        'text-red-400': item.avg_speed && parseFloat(item.avg_speed) < 0.5
-                                    }"></span>
-                                </td>
-                                <td class="py-3">
-                                    <div class="flex space-x-2">
-                                        <template x-if="item.status === 'queued' || item.status === 'missing'">
-                                            <button @click="moveItem(item.id, 'top')" class="text-xs bg-gray-700 hover:bg-gray-600 text-white px-2 py-1 rounded" title="Move to Top">
-                                                ▲ Top
-                                            </button>
-                                        </template>
-                                        <template x-if="item.status === 'processing'">
-                                            <button @click="moveItem(item.id, 'reset')" class="text-xs bg-red-900/50 hover:bg-red-900 text-red-200 px-2 py-1 rounded" title="Reset Stuck Item">
-                                                ⟳ Reset
-                                            </button>
-                                        </template>
-                                        <template x-if="item.status === 'failed' || item.status === 'slow_failed'">
-                                            <button @click="resetToMissing(item.id)" class="text-xs bg-red-900/50 hover:bg-red-900 text-red-200 px-2 py-1 rounded" title="Reset to Missing">
-                                                ⟳ Reset
-                                            </button>
-                                        </template>
-                                        <template x-if="item.status === 'completed'">
-                                            <button @click="regenerateItem(item.id)" class="text-xs bg-blue-900/50 hover:bg-blue-900 text-blue-200 px-2 py-1 rounded" title="Regenerate Preview">
-                                                ⟳ Regen
-                                            </button>
-                                        </template>
-                                        <template x-if="item.status !== 'completed' && item.status !== 'failed' && item.status !== 'slow_failed'">
-                                            <button @click="markCompleted(item.id)" class="text-xs bg-green-900/50 hover:bg-green-900 text-green-200 px-2 py-1 rounded" title="Mark as Completed">
-                                                ✓ Done
-                                            </button>
-                                        </template>
-                                        <template x-if="item.status !== 'failed' && item.status !== 'slow_failed'">
-                                            <button @click="markFailed(item.id)" class="text-xs bg-red-800/50 hover:bg-red-800 text-red-200 px-2 py-1 rounded" title="Mark as Failed">
-                                                ✗ Failed
-                                            </button>
-                                        </template>
-                                    </div>
-                                </td>
-                            </tr>
-                            <!-- Expandable details row -->
-                            <tr x-show="isExpanded(item.id)" x-collapse class="border-b border-gray-800">
-                                <td colspan="10" class="p-0">
-                                    <div class="bg-gray-800 px-6 py-4 border-t border-gray-700">
-                                        <div class="space-y-3 text-sm">
-                                            <!-- Item ID and Bundle Hash -->
-                                            <div class="grid grid-cols-2 gap-4">
-                                                <div>
-                                                    <span class="text-gray-400 font-semibold">Item ID:</span>
-                                                    <span class="text-gray-200 ml-2" x-text="item.id"></span>
-                                                </div>
-                                                <div>
-                                                    <span class="text-gray-400 font-semibold">Bundle Hash:</span>
-                                                    <span class="text-gray-200 ml-2 font-mono text-xs" x-text="item.bundle_hash || 'N/A'"></span>
-                                                </div>
+                                    <template x-if="item.status === 'failed' || item.status === 'slow_failed'">
+                                        <button @click="resetToMissing(item.id)" class="text-xs bg-red-900/50 hover:bg-red-900 text-red-200 px-2 py-1 rounded" title="Reset to Missing">
+                                            ⟳ Reset
+                                        </button>
+                                    </template>
+                                    <template x-if="item.status === 'completed'">
+                                        <button @click="regenerateItem(item.id)" class="text-xs bg-blue-900/50 hover:bg-blue-900 text-blue-200 px-2 py-1 rounded" title="Regenerate Preview">
+                                            ⟳ Regen
+                                        </button>
+                                    </template>
+                                    <template x-if="item.status !== 'completed' && item.status !== 'failed' && item.status !== 'slow_failed'">
+                                        <button @click="markCompleted(item.id)" class="text-xs bg-green-900/50 hover:bg-green-900 text-green-200 px-2 py-1 rounded" title="Mark as Completed">
+                                            ✓ Done
+                                        </button>
+                                    </template>
+                                    <template x-if="item.status !== 'failed' && item.status !== 'slow_failed'">
+                                        <button @click="markFailed(item.id)" class="text-xs bg-red-800/50 hover:bg-red-800 text-red-200 px-2 py-1 rounded" title="Mark as Failed">
+                                            ✗ Failed
+                                        </button>
+                                    </template>
+                                </div>
+                            </td>
+                        </tr>
+                        <!-- Expandable details row -->
+                        <tr x-show="isExpanded(item.id)" x-collapse class="border-b border-gray-800">
+                            <td colspan="10" class="p-0">
+                                <div class="bg-gray-800 px-6 py-4 border-t border-gray-700">
+                                    <div class="space-y-3 text-sm">
+                                        <!-- Item ID and Bundle Hash -->
+                                        <div class="grid grid-cols-2 gap-4">
+                                            <div>
+                                                <span class="text-gray-400 font-semibold">Item ID:</span>
+                                                <span class="text-gray-200 ml-2" x-text="item.id"></span>
+                                            </div>
+                                            <div>
+                                                <span class="text-gray-400 font-semibold">Bundle Hash:</span>
+                                                <span class="text-gray-200 ml-2 font-mono text-xs" x-text="item.bundle_hash || 'N/A'"></span>
+                                            </div>
+                                        </div>
+
+                                        <!-- Error Details (for failed items) -->
+                                        <div x-show="item.status === 'failed'" class="bg-red-900/20 border border-red-700 rounded p-3">
+                                            <h4 class="font-bold text-red-400 mb-2">❌ Error Details:</h4>
+                                            <p class="text-red-300 font-mono text-xs break-all" x-text="item.error_message || 'No error message available'"></p>
+                                        </div>
+
+                                        <!-- File Paths -->
+                                        <div class="space-y-2">
+                                            <!-- Media File Path -->
+                                            <div>
+                                                <span class="text-gray-400 font-semibold">Media Path:</span>
+                                                <div class="text-gray-200 font-mono text-xs mt-1 break-all bg-gray-900 p-2 rounded" x-text="item.file_path || 'Not yet available'"></div>
                                             </div>
 
-                                            <!-- Error Details (for failed items) -->
-                                            <div x-show="item.status === 'failed'" class="bg-red-900/20 border border-red-700 rounded p-3">
-                                                <h4 class="font-bold text-red-400 mb-2">❌ Error Details:</h4>
-                                                <p class="text-red-300 font-mono text-xs break-all" x-text="item.error_message || 'No error message available'"></p>
+                                            <!-- BIF File Path (for completed items) -->
+                                            <div x-show="item.status === 'completed'">
+                                                <span class="text-gray-400 font-semibold">BIF Location:</span>
+                                                <div class="text-green-300 font-mono text-xs mt-1 break-all bg-gray-900 p-2 rounded" x-text="item.bif_path || 'Not yet available'"></div>
                                             </div>
+                                        </div>
 
-                                            <!-- File Paths -->
-                                            <div class="space-y-2">
-                                                <!-- Media File Path -->
-                                                <div>
-                                                    <span class="text-gray-400 font-semibold">Media Path:</span>
-                                                    <div class="text-gray-200 font-mono text-xs mt-1 break-all bg-gray-900 p-2 rounded" x-text="item.file_path || 'Not yet available'"></div>
-                                                </div>
-
-                                                <!-- BIF File Path (for completed items) -->
-                                                <div x-show="item.status === 'completed'">
-                                                    <span class="text-gray-400 font-semibold">BIF Location:</span>
-                                                    <div class="text-green-300 font-mono text-xs mt-1 break-all bg-gray-900 p-2 rounded" x-text="item.bif_path || 'Not yet available'"></div>
-                                                </div>
-                                            </div>
-
-                                            <!-- Media Parts/Versions (if multiple) -->
-                                            <template x-if="item.media_parts_info">
-                                                <div>
-                                                    <span class="text-gray-400 font-semibold block mb-2">Media Parts/Versions:</span>
-                                                    <div class="bg-gray-900 rounded overflow-hidden">
-                                                        <table class="w-full text-xs">
-                                                            <thead class="bg-gray-800">
-                                                                <tr>
-                                                                    <th class="px-2 py-1 text-left text-gray-400">#</th>
-                                                                    <th class="px-2 py-1 text-left text-gray-400">File Path</th>
-                                                                    <th class="px-2 py-1 text-left text-gray-400">Bundle Hash</th>
-                                                                    <th class="px-2 py-1 text-left text-gray-400">BIF Status</th>
+                                        <!-- Media Parts/Versions (if multiple) -->
+                                        <template x-if="item.media_parts_info">
+                                            <div>
+                                                <span class="text-gray-400 font-semibold block mb-2">Media Parts/Versions:</span>
+                                                <div class="bg-gray-900 rounded overflow-hidden">
+                                                    <table class="w-full text-xs">
+                                                        <thead class="bg-gray-800">
+                                                            <tr>
+                                                                <th class="px-2 py-1 text-left text-gray-400">#</th>
+                                                                <th class="px-2 py-1 text-left text-gray-400">File Path</th>
+                                                                <th class="px-2 py-1 text-left text-gray-400">Bundle Hash</th>
+                                                                <th class="px-2 py-1 text-left text-gray-400">BIF Status</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody>
+                                                            <template x-for="(part, index) in JSON.parse(item.media_parts_info || '[]')" :key="index">
+                                                                <tr class="border-t border-gray-800">
+                                                                    <td class="px-2 py-1 text-gray-500" x-text="index + 1"></td>
+                                                                    <td class="px-2 py-1 text-gray-200 font-mono break-all" x-text="part.file_path"></td>
+                                                                    <td class="px-2 py-1 text-gray-300 font-mono text-[10px]" x-text="part.bundle_hash || 'N/A'"></td>
+                                                                    <td class="px-2 py-1">
+                                                                        <span class="text-green-400" x-show="part.bif_path">✓ Generated</span>
+                                                                        <span class="text-gray-500" x-show="!part.bif_path">-</span>
+                                                                    </td>
                                                                 </tr>
-                                                            </thead>
-                                                            <tbody>
-                                                                <template x-for="(part, index) in JSON.parse(item.media_parts_info || '[]')" :key="index">
-                                                                    <tr class="border-t border-gray-800">
-                                                                        <td class="px-2 py-1 text-gray-500" x-text="index + 1"></td>
-                                                                        <td class="px-2 py-1 text-gray-200 font-mono break-all" x-text="part.file_path"></td>
-                                                                        <td class="px-2 py-1 text-gray-300 font-mono text-[10px]" x-text="part.bundle_hash || 'N/A'"></td>
-                                                                        <td class="px-2 py-1">
-                                                                            <span class="text-green-400" x-show="part.bif_path">✓ Generated</span>
-                                                                            <span class="text-gray-500" x-show="!part.bif_path">-</span>
-                                                                        </td>
-                                                                    </tr>
-                                                                </template>
-                                                            </tbody>
-                                                        </table>
-                                                    </div>
+                                                            </template>
+                                                        </tbody>
+                                                    </table>
                                                 </div>
-                                            </template>
+                                            </div>
+                                        </template>
 
-                                            <!-- Processing Info -->
-                                            <div class="grid grid-cols-2 gap-4 text-xs">
-                                                <div>
-                                                    <span class="text-gray-400">Progress:</span>
-                                                    <span class="text-gray-200 ml-2" x-text="item.progress + '%'"></span>
-                                                </div>
-                                                <div>
-                                                    <span class="text-gray-400">Media Type:</span>
-                                                    <span class="text-gray-200 ml-2 capitalize" x-text="item.media_type"></span>
-                                                </div>
+                                        <!-- Processing Info -->
+                                        <div class="grid grid-cols-2 gap-4 text-xs">
+                                            <div>
+                                                <span class="text-gray-400">Progress:</span>
+                                                <span class="text-gray-200 ml-2" x-text="item.progress + '%'"></span>
+                                            </div>
+                                            <div>
+                                                <span class="text-gray-400">Media Type:</span>
+                                                <span class="text-gray-200 ml-2 capitalize" x-text="item.media_type"></span>
                                             </div>
                                         </div>
                                     </div>
-                                </td>
-                            </tr>
-                        </>
-                    </template>
+                                </div>
+                            </td>
+                        </tr>
+                    </tbody>
+                </template>
+                <tbody>
                     <tr x-show="items.length === 0">
                         <td colspan="10" class="py-8 text-center text-gray-500">No items found matching your criteria.</td>
                     </tr>
