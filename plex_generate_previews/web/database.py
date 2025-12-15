@@ -97,6 +97,13 @@ def create_db_and_tables():
     except Exception:
         pass
 
+    # Migration: Add media_parts_info to MediaItem
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("ALTER TABLE mediaitem ADD COLUMN media_parts_info VARCHAR"))
+    except Exception:
+        pass
+
 def get_session():
     with Session(engine) as session:
         yield session

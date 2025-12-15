@@ -6,7 +6,7 @@ from sqlmodel import Session, select, col
 from loguru import logger
 
 from ..config import Config, load_config
-from ..plex_client import plex_server, get_library_sections
+from ..plex_client import plex_server, get_library_sections, get_media_parts_from_database
 from ..worker import WorkerPool
 from ..gpu_detection import detect_all_gpus
 from ..utils import setup_working_directory, sanitize_path
@@ -160,6 +160,19 @@ class Scheduler:
     def resume(self):
         self.paused = False
         logger.info("Queue resumed")
+
+    def _get_bif_path(self, bundle_hash: str) -> str:
+        """Construct BIF file path from bundle hash"""
+        if not bundle_hash or len(bundle_hash) < 2:
+            return None
+        from ..utils import sanitize_path
+        bundle_file = sanitize_path(f'{bundle_hash[0]}/{bundle_hash}.bundle')
+        bundle_path = sanitize_path(os.path.join(
+            self.config.plex_config_folder,
+            'Media', 'localhost', bundle_file
+        ))
+        bif_path = sanitize_path(os.path.join(bundle_path, 'Contents', 'Indexes', 'index-sd.bif'))
+        return bif_path
 
     def start(self):
         if self.running:
@@ -796,6 +809,23 @@ class Scheduler:
                     for item_key, title, item_type, bundle_hash, added_at in items:
                         # Track this item ID as valid in Plex
                         plex_item_ids.add(int(item_key))
+
+                        # Query all media parts for this item from database
+                        import json
+                        media_parts = get_media_parts_from_database(self.config.plex_config_folder, int(item_key))
+                        media_parts_json = None
+                        if media_parts:
+                            # Convert to JSON array of objects
+                            parts_data = [
+                                {
+                                    "file_path": file_path,
+                                    "bundle_hash": bundle_hash_part,
+                                    "bif_path": self._get_bif_path(bundle_hash_part) if bundle_hash_part else None
+                                }
+                                for file_path, bundle_hash_part in media_parts
+                            ]
+                            media_parts_json = json.dumps(parts_data)
+
                         # Check if exists
                         db_item = session.get(MediaItem, int(item_key))
 
@@ -812,6 +842,7 @@ class Scheduler:
                                 status=PreviewStatus.COMPLETED if bif_exists else PreviewStatus.MISSING,
                                 progress=100 if bif_exists else 0,
                                 bundle_hash=bundle_hash,
+                                media_parts_info=media_parts_json,
                                 added_at=added_at if added_at else datetime.utcnow()
                             )
                             session.add(new_item)
@@ -819,6 +850,11 @@ class Scheduler:
                             # Update hash if missing
                             if not db_item.bundle_hash and bundle_hash:
                                 db_item.bundle_hash = bundle_hash
+                                session.add(db_item)
+
+                            # Update media_parts_info
+                            if media_parts_json:
+                                db_item.media_parts_info = media_parts_json
                                 session.add(db_item)
 
                             # Update added_at if differs (sync)

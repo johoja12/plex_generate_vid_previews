@@ -53,10 +53,11 @@ class MediaItem(SQLModel, table=True):
     avg_speed: Optional[str] = None # Average processing speed (e.g., "1.23x")
 
     # Metadata
-    file_path: Optional[str] = None
+    file_path: Optional[str] = None  # Primary file path (for backwards compatibility)
     duration: Optional[int] = None # In milliseconds
-    bundle_hash: Optional[str] = None
-    bif_path: Optional[str] = None # Path to the generated BIF file
+    bundle_hash: Optional[str] = None  # Primary bundle hash (for backwards compatibility)
+    bif_path: Optional[str] = None # Path to the generated BIF file (primary)
+    media_parts_info: Optional[str] = None  # JSON array of all media parts/versions
 
     # Error tracking
     error_message: Optional[str] = None # Failure reason for failed items
