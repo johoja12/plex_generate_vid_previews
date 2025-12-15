@@ -14,7 +14,7 @@ from typing import List, Optional, Any, Tuple
 from loguru import logger
 
 from .config import Config
-from .media_processing import process_item, CodecNotSupportedError, ItemNotFoundError, SlowProcessingError
+from .media_processing import process_item, CodecNotSupportedError, ItemNotFoundError, SlowProcessingError, PlexConnectionError
 from .utils import format_display_title
 from .progress_reporter import ProgressManager
 
@@ -130,12 +130,12 @@ class Worker:
             return f"[{gpu_display}]: Idle - Waiting for task..."
         return f"[CPU      ]: Idle - Waiting for task..."
     
-    def assign_task(self, item_key: str, config: Config, plex, progress_callback=None, 
-                   media_title: str = "", media_type: str = "", title_max_width: int = 20, 
-                   cpu_fallback_queue=None) -> None:
+    def assign_task(self, item_key: str, config: Config, plex, progress_callback=None,
+                   media_title: str = "", media_type: str = "", title_max_width: int = 20,
+                   cpu_fallback_queue=None, pause_callback=None) -> None:
         """
         Assign a new task to this worker.
-        
+
         Args:
             item_key: Plex media item key to process
             config: Configuration object
@@ -145,6 +145,7 @@ class Worker:
             media_type: Media type ('episode' or 'movie')
             title_max_width: Maximum width for title display
             cpu_fallback_queue: Optional queue to add task to if codec error occurs (GPU workers only)
+            pause_callback: Optional callback to pause queue on Plex connection errors
         """
         if self.is_busy:
             raise RuntimeError(f"Worker {self.worker_id} is already busy")
@@ -189,22 +190,23 @@ class Worker:
         
         # Start processing in background thread
         self.current_thread = threading.Thread(
-            target=self._process_item, 
-            args=(item_key, config, plex, progress_callback, cpu_fallback_queue),
+            target=self._process_item,
+            args=(item_key, config, plex, progress_callback, cpu_fallback_queue, pause_callback),
             daemon=True
         )
         self.current_thread.start()
-    
-    def _process_item(self, item_key: str, config: Config, plex, progress_callback=None, cpu_fallback_queue=None) -> None:
+
+    def _process_item(self, item_key: str, config: Config, plex, progress_callback=None, cpu_fallback_queue=None, pause_callback=None) -> None:
         """
         Process a media item in the background thread.
-        
+
         Args:
             item_key: Plex media item key
             config: Configuration object
             plex: Plex server instance
             progress_callback: Callback function for progress updates
             cpu_fallback_queue: Optional queue to add task to if codec error occurs (GPU workers only)
+            pause_callback: Optional callback to pause queue on Plex connection errors
         """
         # Use file path if available, otherwise fall back to title or item_key
         display_name = self.media_file if self.media_file else (self.media_title if self.media_title else item_key)
@@ -271,6 +273,16 @@ class Worker:
             if progress_callback:
                 progress_callback(0, 0, 0, speed="Too Slow", failed=True, error_message=error_msg)
             self.failed += 1
+        except PlexConnectionError as e:
+            # Plex server connection issue - pause queue and don't mark as failed
+            logger.error(f"Worker {self.worker_id} encountered Plex connection error for {display_name}: {e}")
+            logger.warning(f"⚠️  Queue will be paused - item {item_key} will be retried when queue resumes")
+            # Trigger pause via callback if available
+            if pause_callback:
+                pause_callback(item_key, self.media_title, self.media_type)
+            # Don't increment failed counter - this will be retried
+            # Mark worker as completed so it can be reassigned (item will be re-queued)
+            self.completed += 1
         except Exception as e:
             error_msg = str(e)
             logger.error(f"Worker {self.worker_id} failed to process {display_name}: {e}")
@@ -430,7 +442,7 @@ class WorkerPool:
         return ('Unknown (fallback)', 'unknown')
     
     def _assign_fallback_task(self, worker: 'Worker', config: Config, plex,
-                              title_max_width: int) -> bool:
+                              title_max_width: int, pause_callback=None) -> bool:
         """
         Assign a task from fallback queue to a CPU worker.
 
@@ -460,14 +472,15 @@ class WorkerPool:
                 media_title=media_title,
                 media_type=media_type,
                 title_max_width=title_max_width,
-                cpu_fallback_queue=None
+                cpu_fallback_queue=None,
+                pause_callback=pause_callback
             )
             return True
         except queue.Empty:
             return False
     
     def _assign_main_queue_task(self, worker: 'Worker', media_queue: List[tuple],
-                                config: Config, plex, title_max_width: int) -> tuple:
+                                config: Config, plex, title_max_width: int, pause_callback=None) -> tuple:
         """
         Assign a task from main queue to a worker.
 
@@ -498,7 +511,8 @@ class WorkerPool:
             media_title=media_title,
             media_type=media_type,
             title_max_width=title_max_width,
-            cpu_fallback_queue=cpu_fallback_queue
+            cpu_fallback_queue=cpu_fallback_queue,
+            pause_callback=pause_callback
         )
         return (True, False)  # Assigned successfully
     
@@ -516,7 +530,7 @@ class WorkerPool:
         except queue.Empty:
             return True
     
-    def process_items(self, media_items: List[tuple], config: Config, plex, progress_manager: ProgressManager, title_max_width: int = 20, library_name: str = "", stop_condition=None, fetch_more_items=None) -> None:
+    def process_items(self, media_items: List[tuple], config: Config, plex, progress_manager: ProgressManager, title_max_width: int = 20, library_name: str = "", stop_condition=None, fetch_more_items=None, pause_handler=None) -> None:
         """
         Process all media items using available workers.
 
@@ -531,11 +545,20 @@ class WorkerPool:
             library_name: Name of the library section being processed
             stop_condition: Optional callable returning True if processing should stop
             fetch_more_items: Optional callable that returns List[tuple] of more items to process
+            pause_handler: Optional callable to pause queue on Plex connection errors
         """
         media_queue = list(media_items)  # Copy the list
         completed_tasks = 0
         total_items = len(media_items)
         last_overall_progress_log = time.time()
+
+        # Create pause callback that re-queues the item and triggers pause
+        def pause_callback(item_key, media_title, media_type):
+            """Re-queue item and pause processing on Plex connection error."""
+            logger.warning(f"Re-queuing item {item_key} ({media_title}) due to Plex connection error")
+            media_queue.insert(0, (item_key, media_title, media_type))  # Put at front to retry first when resumed
+            if pause_handler:
+                pause_handler()  # Trigger pause in scheduler
         
         # Use provided title width for display formatting
         library_prefix = f"[{library_name}] " if library_name else ""
@@ -657,7 +680,7 @@ class WorkerPool:
 
                     # For CPU workers, try fallback queue first (codec error fallback)
                     if available_worker.worker_type == 'CPU':
-                        if self._assign_fallback_task(available_worker, config, plex, title_max_width):
+                        if self._assign_fallback_task(available_worker, config, plex, title_max_width, pause_callback):
                             attempted_workers = 0  # Reset counter on successful assignment
                             continue
                         # No fallback items - if main queue is also empty, break
@@ -665,7 +688,7 @@ class WorkerPool:
                             break
 
                     # Assign from main queue (for GPU workers or when main queue has items)
-                    assigned, queue_empty = self._assign_main_queue_task(available_worker, media_queue, config, plex, title_max_width)
+                    assigned, queue_empty = self._assign_main_queue_task(available_worker, media_queue, config, plex, title_max_width, pause_callback)
                     if queue_empty:
                         # Queue is empty, stop trying to assign
                         break

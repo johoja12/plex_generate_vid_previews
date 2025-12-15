@@ -963,6 +963,15 @@ class Scheduler:
 
                 return new_items
 
+        # Pause handler for Plex connection errors
+        def pause_handler():
+            """Pause queue when Plex connection error is detected."""
+            if not self.paused:
+                self.paused = True
+                logger.error("⚠️⚠️⚠️  QUEUE PAUSED DUE TO PLEX CONNECTION ERROR ⚠️⚠️⚠️")
+                logger.error("Please check your Plex server status and network connectivity")
+                logger.error("Resume processing from the web interface once Plex is accessible")
+
         # Run processing with dynamic queue refilling
         self.worker_pool.process_items(
             process_list,
@@ -970,7 +979,8 @@ class Scheduler:
             plex,
             pm,
             stop_condition=lambda: self.paused,
-            fetch_more_items=fetch_more_items
+            fetch_more_items=fetch_more_items,
+            pause_handler=pause_handler
         )
         
         # Post-processing: Ensure all items that should be completed are marked as completed

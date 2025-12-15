@@ -82,6 +82,17 @@ class SlowProcessingError(Exception):
     pass
 
 
+class PlexConnectionError(Exception):
+    """
+    Exception raised when there's a connection error to the Plex server.
+
+    This indicates a Plex availability issue (timeout, connection refused, etc.),
+    not a file-specific problem. Queue should be paused to allow user to fix
+    Plex connectivity before continuing.
+    """
+    pass
+
+
 def parse_ffmpeg_progress_line(line: str, total_duration: float, progress_callback=None):
     """
     Parse a single FFmpeg progress line and call progress callback if provided.
@@ -844,6 +855,19 @@ def process_item(item_key: str, gpu: Optional[str], gpu_device_path: Optional[st
         # Item not found in Plex (404) - likely deleted after being queued
         logger.info(f"Item {item_key} not found in Plex - may have been deleted. Skipping.")
         raise ItemNotFoundError(f"Item {item_key} not found in Plex (404)")
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout,
+            requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout) as e:
+        # Connection error to Plex server - this is a Plex availability issue
+        logger.error(f"Failed to query Plex for item {item_key} after retries: {e}")
+        logger.error(f"Exception type: {type(e).__name__}")
+        # For connection errors, log more details
+        if hasattr(e, 'request') and e.request:
+            logger.error(f"Request URL: {e.request.url}")
+            logger.error(f"Request method: {e.request.method}")
+            logger.error(f"Request headers: {e.request.headers}")
+        logger.warning("⚠️  Plex server connection issue detected - queue will be paused")
+        logger.warning("Please check Plex server status and connectivity before resuming")
+        raise PlexConnectionError(f"Plex server connection error: {e}") from e
     except (Exception, http.client.BadStatusLine, xml.etree.ElementTree.ParseError) as e:
         logger.error(f"Failed to query Plex for item {item_key} after retries: {e}")
         logger.error(f"Exception type: {type(e).__name__}")
