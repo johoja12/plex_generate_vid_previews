@@ -15,8 +15,9 @@ ARG SETUPTOOLS_SCM_PRETEND_VERSION=""
 # - vainfo: Tool to test/verify VA-API functionality
 # - pciutils: Provides lspci for better GPU naming
 # - git: For version detection when running from mounted git repository
+# - python3-dev: For building python extensions
 RUN apt-get update && \
-    apt-get install -y mediainfo software-properties-common gcc musl-dev python3 python3-pip gosu pciutils git \
+    apt-get install -y mediainfo software-properties-common gcc musl-dev python3 python3-pip python3-dev gosu pciutils git \
     intel-media-va-driver-non-free i965-va-driver mesa-va-drivers libva2 libva-drm2 vainfo && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
@@ -51,10 +52,14 @@ RUN chmod +x /app/wrapper.sh
 
 # Default PUID/PGID (override with environment variables)
 ENV PUID=1000 \
-    PGID=1000
+    PGID=1000 \
+    DB_PATH="/config/plex_previews.db"
 
 # Tell s6-overlay to preserve environment variables
 ENV S6_KEEP_ENV=1
+
+# Expose the web port
+EXPOSE 8008
 
 # Use LinuxServer's /init for PUID/PGID handling
 ENTRYPOINT ["/init", "/app/wrapper.sh"]

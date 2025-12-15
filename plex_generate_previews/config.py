@@ -10,8 +10,9 @@ import sys
 import shutil
 import subprocess
 import tempfile
+import json
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from dotenv import load_dotenv
 from loguru import logger
 
@@ -92,6 +93,7 @@ class Config:
     plex_config_folder: str
     plex_local_videos_path_mapping: str
     plex_videos_path_mapping: str
+    plex_path_mappings: List[Tuple[str, str]]
     
     # Processing configuration
     plex_bif_frame_interval: int
@@ -111,6 +113,7 @@ class Config:
     
     # Logging
     log_level: str
+    scheduler_loop_interval: int = 5 # Default to 5 seconds
     
     # Internal constants
     worker_pool_timeout: int = 30
@@ -414,13 +417,14 @@ def _validate_paths(tmp_folder: str, validation_errors: list) -> tuple[bool, boo
     return tmp_folder_created_by_us, True
 
 
-def load_config(cli_args=None) -> Config:
+def load_config(cli_args=None, print_help=True) -> Config:
     """
     Load and validate configuration from CLI arguments and environment variables.
     CLI arguments take precedence over environment variables.
     
     Args:
         cli_args: Parsed CLI arguments or None
+        print_help: Whether to print help messages on validation failure
         
     Returns:
         Config: Validated configuration object
@@ -444,6 +448,33 @@ def load_config(cli_args=None) -> Config:
     plex_config_folder = get_config_value_str(cli_args, 'plex_config_folder', 'PLEX_CONFIG_FOLDER', '/path_to/plex/Library/Application Support/Plex Media Server')
     plex_local_videos_path_mapping = get_config_value_str(cli_args, 'plex_local_videos_path_mapping', 'PLEX_LOCAL_VIDEOS_PATH_MAPPING', '')
     plex_videos_path_mapping = get_config_value_str(cli_args, 'plex_videos_path_mapping', 'PLEX_VIDEOS_PATH_MAPPING', '')
+    
+    # Parse PLEX_PATH_MAPPINGS
+    plex_path_mappings_raw = os.environ.get('PLEX_PATH_MAPPINGS', '')
+    plex_path_mappings: List[Tuple[str, str]] = []
+    
+    if plex_path_mappings_raw:
+        try:
+            # Try JSON first
+            loaded = json.loads(plex_path_mappings_raw)
+            if isinstance(loaded, list):
+                for item in loaded:
+                    if isinstance(item, list) and len(item) == 2:
+                        plex_path_mappings.append((str(item[0]), str(item[1])))
+                    elif isinstance(item, dict):
+                        for k, v in item.items():
+                             plex_path_mappings.append((str(k), str(v)))
+        except json.JSONDecodeError:
+            # Fallback to semicolon separated
+            pairs = [p.strip() for p in plex_path_mappings_raw.split(';') if p.strip()]
+            for pair in pairs:
+                parts = [p.strip() for p in pair.split(',') if p.strip()]
+                if len(parts) == 2:
+                    plex_path_mappings.append((parts[0], parts[1]))
+    
+    # If no new mappings, but legacy ones exist, populate from legacy
+    if not plex_path_mappings and plex_videos_path_mapping and plex_local_videos_path_mapping:
+         plex_path_mappings.append((plex_videos_path_mapping, plex_local_videos_path_mapping))
     
     plex_bif_frame_interval = get_config_value_int(cli_args, 'plex_bif_frame_interval', 'PLEX_BIF_FRAME_INTERVAL', 5)
     thumbnail_quality = get_config_value_int(cli_args, 'thumbnail_quality', 'THUMBNAIL_QUALITY', 4)
@@ -504,6 +535,9 @@ def load_config(cli_args=None) -> Config:
     
     # Handle missing parameters (show help)
     if missing_params:
+        if not print_help:
+            return None
+            
         logger.error('❌ Configuration Error: Missing required parameters:')
         for i, error_msg in enumerate(missing_params, 1):
             logger.error(f'   {i}. {error_msg}')
@@ -528,6 +562,9 @@ def load_config(cli_args=None) -> Config:
     
     # Handle validation errors (standard error messages)
     if validation_errors:
+        if not print_help:
+            return None
+
         logger.error('❌ Configuration Error:')
         for i, error_msg in enumerate(validation_errors, 1):
             logger.error(f'   {i}. {error_msg}')
@@ -549,6 +586,7 @@ def load_config(cli_args=None) -> Config:
         plex_config_folder=plex_config_folder,
         plex_local_videos_path_mapping=plex_local_videos_path_mapping,
         plex_videos_path_mapping=plex_videos_path_mapping,
+        plex_path_mappings=plex_path_mappings,
         plex_bif_frame_interval=plex_bif_frame_interval,
         thumbnail_quality=thumbnail_quality,
         regenerate_thumbnails=regenerate_thumbnails,
@@ -559,7 +597,8 @@ def load_config(cli_args=None) -> Config:
         tmp_folder=tmp_folder,
         tmp_folder_created_by_us=tmp_folder_created_by_us,
         ffmpeg_path=ffmpeg_path,
-        log_level=log_level
+        log_level=log_level,
+        scheduler_loop_interval=get_config_value_int(cli_args, 'scheduler_loop_interval', 'SCHEDULER_LOOP_INTERVAL', 5)
     )
     
     # Set the timeout envvar for https://github.com/pkkid/python-plexapi

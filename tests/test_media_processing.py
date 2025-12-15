@@ -812,8 +812,11 @@ class TestProcessItem:
         mock_config.plex_local_videos_path_mapping = ""
         mock_config.plex_videos_path_mapping = ""
         
-        # Should not crash, just skip the file
-        process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
+        # Should raise RuntimeError because all parts were skipped
+        with pytest.raises(RuntimeError) as excinfo:
+            process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
+        
+        assert "No media parts were successfully processed" in str(excinfo.value)
     
     def test_process_item_plex_api_error(self, mock_config):
         """Test handling of Plex API errors."""

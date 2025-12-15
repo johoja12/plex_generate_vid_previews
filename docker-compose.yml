@@ -1,0 +1,39 @@
+services:
+  plex-previews:
+    image: plex-generate-previews:latest
+    container_name: plex-previews
+    build: .
+    environment:
+      - PUID=1000
+      - PGID=109
+      - TZ=Etc/UTC
+      # App Config
+      - ADMIN_PASSWORD=admin  # Change this!
+      - DB_PATH=/config/plex_previews.db
+      # Plex Connection (Optional - can be configured via Web UI Setup)
+      # - PLEX_URL=http://192.168.1.10:32400
+      # - PLEX_TOKEN=your_plex_token_here
+      # Paths (Must match what Plex sees)
+      - PLEX_CONFIG_FOLDER=/config/plex/Library/Application Support/Plex Media Server
+      # Processing Config
+      - GPU_THREADS=1
+      - CPU_THREADS=1
+      - LOG_LEVEL=DEBUG
+    volumes:
+      - ./config:/config
+      - /mnt:/mnt
+      - /mnt/storage-raid/plex/Library/Application Support/Plex Media Server/:/config/plex # Mount your actual Plex config folder here (Read-Only recommended)
+      # You might need to map media folders if using CPU processing or if path mapping is required
+      # - /path/to/media:/data/media
+    ports:
+      - 8008:8008
+    restart: unless-stopped
+    group_add:
+      - 109  # render group GID
+    devices:
+      - /dev/dri:/dev/dri
+    # devices:
+      # - /dev/dri:/dev/dri # For Intel/AMD GPU
+      # - /dev/nvidia0:/dev/nvidia0 # For Nvidia GPU
+      # - /dev/nvidiactl:/dev/nvidiactl
+      # - /dev/nvidia-uvm:/dev/nvidia-uvm

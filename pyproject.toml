@@ -37,6 +37,13 @@ dependencies = [
     "rich==13.8.1",
     "pymediainfo==7.0.1",
     "psutil>=5.9.0,<6.0.0",
+    "fastapi>=0.109.0",
+    "uvicorn>=0.27.0",
+    "sqlmodel>=0.0.14",
+    "jinja2>=3.1.3",
+    "python-multipart>=0.0.7",
+    "passlib[bcrypt]>=1.7.4",
+    "itsdangerous>=2.1.2",
 ]
 
 [project.optional-dependencies]
@@ -56,6 +63,7 @@ Issues = "https://github.com/stevezau/plex_generate_vid_previews/issues"
 
 [project.scripts]
 plex-generate-previews = "plex_generate_previews.cli:main"
+plex-previews-web = "plex_generate_previews.web.main:start"
 
 [tool.setuptools.packages.find]
 where = ["."]

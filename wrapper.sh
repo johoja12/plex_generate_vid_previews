@@ -45,9 +45,16 @@ fi
 if [ "$(id -u)" = "0" ]; then
     # Running as root - drop privileges to abc user
     # gosu preserves environment variables
-    exec gosu abc plex-generate-previews "$@"
+    
+    # Ensure config directory exists and is writable if using default DB path
+    if [[ "$DB_PATH" == "/config/"* ]]; then
+        mkdir -p /config
+        chown -R abc:abc /config
+    fi
+    
+    exec gosu abc plex-previews-web "$@"
 else
     # Already running as non-root - just run directly
-    exec plex-generate-previews "$@"
+    exec plex-previews-web "$@"
 fi
 

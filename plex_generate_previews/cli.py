@@ -378,6 +378,62 @@ def create_progress_displays():
     return main_progress, worker_progress, query_progress
 
 
+class RichProgressManager:
+    """Progress manager implementation for Rich CLI."""
+    
+    def __init__(self, main_progress, worker_progress, main_task_id):
+        self.main_progress = main_progress
+        self.worker_progress = worker_progress
+        self.main_task_id = main_task_id
+        self.worker_tasks = {}
+
+    def init_workers(self, workers):
+        for worker in workers:
+            task_id = self.worker_progress.add_task(
+                worker._format_idle_description(),
+                total=100,
+                completed=0,
+                speed="0.0x",
+                style="cyan"
+            )
+            self.worker_tasks[worker.worker_id] = task_id
+
+    def update_worker(self, worker_id, data: dict):
+        task_id = self.worker_tasks.get(worker_id)
+        if task_id is None: return
+
+        if data['is_busy']:
+             self.worker_progress.update(
+                task_id,
+                description=data['task_title'],
+                completed=data['progress_percent'],
+                speed=data['speed'],
+                remaining_time=data['remaining_time'],
+                frame=data['frame'],
+                fps=data['fps'],
+                q=data['q'],
+                size=data['size'],
+                time_str=data['time_str'],
+                bitrate=data['bitrate']
+            )
+        else:
+             self.worker_progress.update(
+                task_id,
+                description=data['task_title'],
+                completed=0,
+                speed="0.0x"
+            )
+
+    def update_main_progress(self, completed, total):
+        if self.main_task_id is not None:
+             self.main_progress.update(self.main_task_id, completed=completed)
+
+    def cleanup_workers(self):
+        for task_id in self.worker_tasks.values():
+            self.worker_progress.remove_task(task_id)
+        self.worker_tasks.clear()
+
+
 def run_processing(config, selected_gpus):
     """Run the main processing workflow."""
     try:
@@ -437,8 +493,11 @@ def run_processing(config, selected_gpus):
                 
                 main_task = main_progress.add_task(f"Processing {section.title}", total=len(media_items))
                 
+                # Create progress manager
+                progress_manager = RichProgressManager(main_progress, worker_progress, main_task)
+                
                 # Process items in this section with worker progress
-                worker_pool.process_items(media_items, config, plex, worker_progress, main_progress, main_task, title_max_width, library_name=section.title)
+                worker_pool.process_items(media_items, config, plex, progress_manager, title_max_width, library_name=section.title)
                 total_processed += len(media_items)
                 
                 # Remove completed task

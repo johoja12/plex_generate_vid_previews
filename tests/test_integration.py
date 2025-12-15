@@ -79,13 +79,15 @@ class TestFullPipeline:
             ('/library/metadata/4', 'Movie 4', 'movie'),
         ]
         
-        # Mock progress
-        main_progress = MagicMock()
-        worker_progress = MagicMock()
-        worker_progress.add_task = MagicMock(side_effect=list(range(10)))
+        # Mock progress manager
+        mock_progress_manager = MagicMock()
+        mock_progress_manager.init_workers.return_value = None
+        mock_progress_manager.update_main_progress.return_value = None
+        mock_progress_manager.update_worker.return_value = None
+        mock_progress_manager.cleanup_workers.return_value = None
         
         # Process items
-        pool.process_items(items, mock_config, mock_plex, worker_progress, main_progress)
+        pool.process_items(items, mock_config, mock_plex, mock_progress_manager, title_max_width=20)
         
         # Verify all items were processed
         assert mock_process.call_count == 4
@@ -120,12 +122,15 @@ class TestFullPipeline:
             ('/library/metadata/4', 'Movie 4', 'movie'),
         ]
         
-        main_progress = MagicMock()
-        worker_progress = MagicMock()
-        worker_progress.add_task = MagicMock(side_effect=list(range(10)))
+        # Mock progress manager
+        mock_progress_manager = MagicMock()
+        mock_progress_manager.init_workers.return_value = None
+        mock_progress_manager.update_main_progress.return_value = None
+        mock_progress_manager.update_worker.return_value = None
+        mock_progress_manager.cleanup_workers.return_value = None
         
         # Process items (should handle errors gracefully)
-        pool.process_items(items, mock_config, mock_plex, worker_progress, main_progress)
+        pool.process_items(items, mock_config, mock_plex, mock_progress_manager, title_max_width=20)
         
         # Verify some succeeded and some failed
         total_completed = sum(w.completed for w in pool.workers)
@@ -179,14 +184,17 @@ class TestWorkerPoolIntegration:
             ('/library/metadata/3', 'Movie 3', 'movie'),
         ]
         
-        main_progress = MagicMock()
-        worker_progress = MagicMock()
-        worker_progress.add_task = MagicMock(side_effect=list(range(10)))
+        # Mock progress manager
+        mock_progress_manager = MagicMock()
+        mock_progress_manager.init_workers.return_value = None
+        mock_progress_manager.update_main_progress.return_value = None
+        mock_progress_manager.update_worker.return_value = None
+        mock_progress_manager.cleanup_workers.return_value = None
         
         # Each item simulates successful image generation
         mock_gen_images.return_value = (True, 1, False, 0.8, "1.0x")
         # Process
-        pool.process_items(items, mock_config, mock_plex, worker_progress, main_progress)
+        pool.process_items(items, mock_config, mock_plex, mock_progress_manager, title_max_width=20)
         
         # Verify all completed
         total_completed = sum(w.completed for w in pool.workers)
@@ -216,12 +224,15 @@ class TestWorkerPoolIntegration:
         # Many items to ensure distribution
         items = [(f'/library/metadata/{i}', f'Movie {i}', 'movie') for i in range(9)]
         
-        main_progress = MagicMock()
-        worker_progress = MagicMock()
-        worker_progress.add_task = MagicMock(side_effect=list(range(20)))
+        # Mock progress manager
+        mock_progress_manager = MagicMock()
+        mock_progress_manager.init_workers.return_value = None
+        mock_progress_manager.update_main_progress.return_value = None
+        mock_progress_manager.update_worker.return_value = None
+        mock_progress_manager.cleanup_workers.return_value = None
         
         # Process
-        pool.process_items(items, mock_config, mock_plex, worker_progress, main_progress)
+        pool.process_items(items, mock_config, mock_plex, mock_progress_manager, title_max_width=20)
         
         # Verify work was distributed (each worker should have processed some items)
         for worker in pool.workers:

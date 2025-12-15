@@ -344,11 +344,14 @@ class TestWorkerPool:
             ('key2', 'Movie 2', 'movie'),
         ]
         
-        main_progress = MagicMock()
-        worker_progress = MagicMock()
-        worker_progress.add_task = MagicMock(side_effect=[0, 1])
+        # Mock progress manager
+        mock_progress_manager = MagicMock()
+        mock_progress_manager.init_workers.return_value = None
+        mock_progress_manager.update_main_progress.return_value = None
+        mock_progress_manager.update_worker.return_value = None
+        mock_progress_manager.cleanup_workers.return_value = None
         
-        pool.process_items(items, config, plex, worker_progress, main_progress)
+        pool.process_items(items, config, plex, mock_progress_manager, title_max_width=20)
         
         # All items should be processed
         total_completed = sum(w.completed for w in pool.workers)
@@ -386,9 +389,12 @@ class TestWorkerPool:
         # Simulate slow processing
         def slow_process(*args, **kwargs):
             time.sleep(0.05)
-        
-        mock_process.side_effect = slow_process
-        
+            # Simulate progress update to mark item as processed
+            progress_callback = kwargs.get('progress_callback')
+            if progress_callback:
+                progress_callback(100, 100, 100, speed="Finished") # 100% completed
+            
+        mock_process.side_effect = slow_process        
         pool = WorkerPool(gpu_workers=0, cpu_workers=2, selected_gpus=[])
         
         config = MagicMock()
@@ -401,11 +407,14 @@ class TestWorkerPool:
             ('key4', 'Movie 4', 'movie'),
         ]
         
-        main_progress = MagicMock()
-        worker_progress = MagicMock()
-        worker_progress.add_task = MagicMock(side_effect=list(range(10)))
+        # Mock progress manager
+        mock_progress_manager = MagicMock()
+        mock_progress_manager.init_workers.return_value = None
+        mock_progress_manager.update_main_progress.return_value = None
+        mock_progress_manager.update_worker.return_value = None
+        mock_progress_manager.cleanup_workers.return_value = None
         
-        pool.process_items(items, config, plex, worker_progress, main_progress)
+        pool.process_items(items, config, plex, mock_progress_manager, title_max_width=20)
         
         # All 4 items should be completed
         total_completed = sum(w.completed for w in pool.workers)
@@ -436,11 +445,14 @@ class TestWorkerPool:
             ('key4', 'Movie 4', 'movie'),
         ]
         
-        main_progress = MagicMock()
-        worker_progress = MagicMock()
-        worker_progress.add_task = MagicMock(side_effect=list(range(10)))
+        # Mock progress manager
+        mock_progress_manager = MagicMock()
+        mock_progress_manager.init_workers.return_value = None
+        mock_progress_manager.update_main_progress.return_value = None
+        mock_progress_manager.update_worker.return_value = None
+        mock_progress_manager.cleanup_workers.return_value = None
         
-        pool.process_items(items, config, plex, worker_progress, main_progress)
+        pool.process_items(items, config, plex, mock_progress_manager, title_max_width=20)
         
         # Some should fail
         total_failed = sum(w.failed for w in pool.workers)
@@ -458,15 +470,17 @@ class TestWorkerPool:
         
         items = [('key1', 'Movie 1', 'movie')]
         
-        main_progress = MagicMock()
-        worker_progress = MagicMock()
-        task_id = 0
-        worker_progress.add_task = MagicMock(return_value=task_id)
+        # Mock progress manager
+        mock_progress_manager = MagicMock()
+        mock_progress_manager.init_workers.return_value = None
+        mock_progress_manager.update_main_progress.return_value = None
+        mock_progress_manager.update_worker.return_value = None
+        mock_progress_manager.cleanup_workers.return_value = None
         
-        pool.process_items(items, config, plex, worker_progress, main_progress)
+        pool.process_items(items, config, plex, mock_progress_manager, title_max_width=20)
         
         # Progress update should have been called
-        assert worker_progress.update.called or worker_progress.remove_task.called
+        assert mock_progress_manager.update_worker.called
     
     def test_worker_statistics(self):
         """Test worker completed/failed statistics."""
@@ -510,11 +524,14 @@ class TestWorkerPool:
             ('key1', 'AV1 Video', 'episode'),
         ]
         
-        main_progress = MagicMock()
-        worker_progress = MagicMock()
-        worker_progress.add_task = MagicMock(side_effect=[0, 1])
+        # Mock progress manager
+        mock_progress_manager = MagicMock()
+        mock_progress_manager.init_workers.return_value = None
+        mock_progress_manager.update_main_progress.return_value = None
+        mock_progress_manager.update_worker.return_value = None
+        mock_progress_manager.cleanup_workers.return_value = None
         
-        pool.process_items(items, config, plex, worker_progress, main_progress)
+        pool.process_items(items, config, plex, mock_progress_manager, title_max_width=20)
         
         # Wait a bit longer for threads to complete and fallback queue to process
         time.sleep(0.2)
@@ -562,11 +579,14 @@ class TestWorkerPool:
             ('key3', 'Normal Video 2', 'movie'),
         ]
         
-        main_progress = MagicMock()
-        worker_progress = MagicMock()
-        worker_progress.add_task = MagicMock(side_effect=list(range(10)))
+        # Mock progress manager
+        mock_progress_manager = MagicMock()
+        mock_progress_manager.init_workers.return_value = None
+        mock_progress_manager.update_main_progress.return_value = None
+        mock_progress_manager.update_worker.return_value = None
+        mock_progress_manager.cleanup_workers.return_value = None
         
-        pool.process_items(items, config, plex, worker_progress, main_progress)
+        pool.process_items(items, config, plex, mock_progress_manager, title_max_width=20)
         
         # Wait a bit longer for all threads and fallback queue to process
         time.sleep(0.2)
@@ -602,11 +622,14 @@ class TestWorkerPool:
             ('key1', 'AV1 Video', 'episode'),
         ]
         
-        main_progress = MagicMock()
-        worker_progress = MagicMock()
-        worker_progress.add_task = MagicMock(return_value=0)
+        # Mock progress manager
+        mock_progress_manager = MagicMock()
+        mock_progress_manager.init_workers.return_value = None
+        mock_progress_manager.update_main_progress.return_value = None
+        mock_progress_manager.update_worker.return_value = None
+        mock_progress_manager.cleanup_workers.return_value = None
         
-        pool.process_items(items, config, plex, worker_progress, main_progress)
+        pool.process_items(items, config, plex, mock_progress_manager, title_max_width=20)
         
         # GPU worker should fail (no CPU workers to hand off to)
         assert pool.workers[0].failed == 1

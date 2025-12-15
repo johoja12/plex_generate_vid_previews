@@ -42,6 +42,11 @@
                     <input type="number" x-model="config.cpu_threads" class="w-full bg-gray-700 text-white p-2 rounded border border-gray-600 focus:border-orange-500 focus:outline-none">
                     <p class="text-xs text-gray-500 mt-1">Number of concurrent CPU tasks (fallback).</p>
                 </div>
+                <div>
+                    <label class="block text-gray-400 text-sm font-bold mb-2">Sync Interval (hours)</label>
+                    <input type="number" x-model.number="syncIntervalHours" min="1" max="168" class="w-full bg-gray-700 text-white p-2 rounded border border-gray-600 focus:border-orange-500 focus:outline-none">
+                    <p class="text-xs text-gray-500 mt-1">How often to sync library from Plex (1-168 hours).</p>
+                </div>
             </div>
         </div>
 
@@ -252,7 +257,8 @@
     <script>
         function settings() {
             return {
-                config: { gpu_threads: 1, cpu_threads: 1 },
+                config: { gpu_threads: 1, cpu_threads: 1, sync_interval: 21600 },
+                syncIntervalHours: 6,  // Default to 6 hours
                 newPassword: '',
                 passwordWarning: false,
                 saving: false,
@@ -277,6 +283,8 @@
                     try {
                         const res = await fetch('/api/settings');
                         this.config = await res.json();
+                        // Convert seconds to hours for display
+                        this.syncIntervalHours = Math.round(this.config.sync_interval / 3600);
                         this.fetchMissingHashes();
                     } catch (e) { console.error(e); }
                 },
@@ -363,6 +371,7 @@
                         const payload = {
                             gpu_threads: this.config.gpu_threads,
                             cpu_threads: this.config.cpu_threads,
+                            sync_interval: this.syncIntervalHours * 3600,  // Convert hours to seconds
                             new_password: this.newPassword
                         };
 
