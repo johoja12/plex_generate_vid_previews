@@ -844,68 +844,30 @@ def process_item(item_key: str, gpu: Optional[str], gpu_device_path: Optional[st
         plex: Plex server instance
         progress_callback: Callback function for progress updates
     """
-    try:
-        # Handle both raw IDs (ratingKey) and full paths
-        query_key = item_key
-        if str(item_key).isdigit():
-            query_key = f'/library/metadata/{item_key}'
+    # Query media parts directly from database (no Plex API call needed!)
+    from .plex_client import get_media_parts_from_database
 
-        data = retry_plex_call(plex.query, f'{query_key}/tree')
-    except NotFound as e:
-        # Item not found in Plex (404) - likely deleted after being queued
-        logger.info(f"Item {item_key} not found in Plex - may have been deleted. Skipping.")
-        raise ItemNotFoundError(f"Item {item_key} not found in Plex (404)")
-    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout,
-            requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout) as e:
-        # Connection error to Plex server - this is a Plex availability issue
-        logger.error(f"Failed to query Plex for item {item_key} after retries: {e}")
-        logger.error(f"Exception type: {type(e).__name__}")
-        # For connection errors, log more details
-        if hasattr(e, 'request') and e.request:
-            logger.error(f"Request URL: {e.request.url}")
-            logger.error(f"Request method: {e.request.method}")
-            logger.error(f"Request headers: {e.request.headers}")
-        logger.warning("⚠️  Plex server connection issue detected - queue will be paused")
-        logger.warning("Please check Plex server status and connectivity before resuming")
-        raise PlexConnectionError(f"Plex server connection error: {e}") from e
-    except (Exception, http.client.BadStatusLine, xml.etree.ElementTree.ParseError) as e:
-        logger.error(f"Failed to query Plex for item {item_key} after retries: {e}")
-        logger.error(f"Exception type: {type(e).__name__}")
-        # For connection errors, log more details
-        if hasattr(e, 'request') and e.request:
-            logger.error(f"Request URL: {e.request.url}")
-            logger.error(f"Request method: {e.request.method}")
-            logger.error(f"Request headers: {e.request.headers}")
-        raise
-    except Exception as e:
-        logger.error(f"Error querying Plex for item {item_key}: {e}")
-        raise
+    media_parts_data = get_media_parts_from_database(config.plex_config_folder, int(item_key))
+
+    if not media_parts_data:
+        # No media parts found in database - item may not exist or was deleted
+        logger.info(f"Item {item_key} has no media parts in database - may have been deleted. Skipping.")
+        raise ItemNotFoundError(f"Item {item_key} has no media parts in Plex database")
 
     # Track if we successfully processed at least one media part
     processed_any = False
     processing_error = None
 
-    for media_part in data.findall('.//MediaPart'):
-        # Get the file path (as Plex sees it, before path mapping)
-        plex_file_path = media_part.attrib.get('file')
+    for plex_file_path, bundle_hash in media_parts_data:
+        # We now have both file path and bundle hash from the database
         if not plex_file_path:
             logger.warning(f'Skipping media part with no file path in item {item_key}')
             continue
 
-        # Try to get hash from database first (primary source as requested)
-        logger.debug(f'Querying database for hash for {plex_file_path}')
-        bundle_hash = get_hash_from_database(config.plex_config_folder, plex_file_path)
-        
-        if bundle_hash:
-            logger.debug(f"Retrieved bundle hash from database: {bundle_hash}")
-        else:
-            # Fallback to API if DB fails or returns nothing
-            api_hash = media_part.attrib.get('hash')
-            if api_hash and len(api_hash) >= 2:
-                bundle_hash = api_hash
-                logger.warning(f"Hash not found in DB for {plex_file_path}, using API hash: {bundle_hash}")
-            else:
-                logger.debug(f"No hash found in DB or API for {plex_file_path}")
+        logger.debug(f'Processing media part: {plex_file_path} (hash: {bundle_hash})')
+
+        if not bundle_hash:
+            logger.warning(f"No bundle hash found in database for {plex_file_path}")
 
         # Apply path mapping
         media_file = sanitize_path(plex_file_path)

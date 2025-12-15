@@ -202,6 +202,59 @@ def get_hash_with_fallback(item, plex_config_folder: str) -> Optional[str]:
         return None
 
 
+def get_media_parts_from_database(plex_config_folder: str, rating_key: int):
+    """
+    Query media parts (file paths and bundle hashes) directly from the Plex SQLite database.
+
+    This eliminates the need for Plex API calls during processing, making the system
+    more resilient to Plex server outages and faster overall.
+
+    Args:
+        plex_config_folder: Path to Plex config folder
+        rating_key: Plex rating key (item ID)
+
+    Returns:
+        list: List of tuples (file_path, bundle_hash) for each media part, or empty list if not found
+    """
+    db_path = os.path.join(plex_config_folder, 'Plug-in Support', 'Databases',
+                           'com.plexapp.plugins.library.db')
+
+    if not os.path.exists(db_path):
+        logger.warning(f"Plex database not found at: {db_path}")
+        return []
+
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+
+        # Query for all media parts associated with this item
+        query = """
+            SELECT media_parts.file, media_parts.hash
+            FROM media_parts
+            JOIN media_items ON media_parts.media_item_id = media_items.id
+            WHERE media_items.metadata_item_id = ?
+        """
+
+        cursor.execute(query, (rating_key,))
+        results = cursor.fetchall()
+
+        conn.close()
+
+        if results:
+            logger.debug(f"Found {len(results)} media part(s) in database for item {rating_key}")
+            return [(file_path, bundle_hash) for file_path, bundle_hash in results if file_path]
+        else:
+            logger.warning(f"No media parts found in database for item {rating_key}")
+            return []
+
+    except sqlite3.Error as e:
+        logger.error(f"Database error while querying media parts for item {rating_key}: {e}")
+        return []
+    except Exception as e:
+        logger.error(f"Unexpected error querying database for item {rating_key}: {type(e).__name__}: {e}")
+        return []
+
+
 def get_hash_from_database(plex_config_folder: str, file_path: str) -> str:
     """
     Query the bundle hash directly from the Plex SQLite database.
