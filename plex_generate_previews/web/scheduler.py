@@ -874,6 +874,7 @@ class Scheduler:
                                 logger.info(f"Item {item_key} ({title}) is completed but has new parts without BIF files - resetting to missing")
                                 db_item.status = PreviewStatus.MISSING
                                 db_item.progress = 0
+                                db_item.updated_at = datetime.utcnow()  # Update timestamp so it gets queued soon
                                 session.add(db_item)
                             # If existing item is missing/queued/processing but BIF exists, mark completed
                             elif db_item.status != PreviewStatus.COMPLETED and bif_exists and not any_missing_bif:
@@ -938,11 +939,11 @@ class Scheduler:
         
         with Session(engine) as session:
             # Prioritize: Status is MISSING only (not QUEUED - those are already in the worker queue)
-            # Sort by added_at desc (Newest first), then by queue_order for manual prioritization
-            # This ensures newest items are ALWAYS processed first, with queue_order as tiebreaker
+            # Sort by updated_at desc (Most recently changed first), then by queue_order for manual prioritization
+            # This ensures items with new parts added are processed before older missing items
             statement = select(MediaItem).where(
                 MediaItem.status == PreviewStatus.MISSING
-            ).order_by(MediaItem.added_at.desc(), MediaItem.queue_order.asc()).limit(batch_size)
+            ).order_by(MediaItem.updated_at.desc(), MediaItem.queue_order.asc()).limit(batch_size)
 
             items = session.exec(statement).all()
 
@@ -951,10 +952,10 @@ class Scheduler:
 
             # Log the order of items being processed for debugging
             if items:
-                logger.debug(f"Processing batch of {len(items)} items (newest first):")
+                logger.debug(f"Processing batch of {len(items)} items (most recently updated first):")
                 for idx, item in enumerate(items[:3]):  # Show first 3 items
-                    added_date = item.added_at.strftime('%Y-%m-%d') if item.added_at else 'unknown'
-                    logger.debug(f"  {idx+1}. {item.title} (added: {added_date})")
+                    updated_date = item.updated_at.strftime('%Y-%m-%d %H:%M') if item.updated_at else 'unknown'
+                    logger.debug(f"  {idx+1}. {item.title} (updated: {updated_date})")
 
             # Prepare for worker pool
             # worker_pool.process_items expects List[tuple(key, title, type)]
@@ -988,9 +989,10 @@ class Scheduler:
 
             with Session(engine) as session:
                 # Fetch items that are MISSING only (QUEUED items are already in the worker queue)
+                # Sort by updated_at to prioritize recently changed items (e.g., new parts added)
                 statement = select(MediaItem).where(
                     MediaItem.status == PreviewStatus.MISSING
-                ).order_by(MediaItem.added_at.desc(), MediaItem.queue_order.asc()).limit(batch_size)
+                ).order_by(MediaItem.updated_at.desc(), MediaItem.queue_order.asc()).limit(batch_size)
 
                 items = session.exec(statement).all()
 
