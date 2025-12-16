@@ -937,11 +937,11 @@ class Scheduler:
             batch_size = 10  # Fallback if config not loaded yet
         
         with Session(engine) as session:
-            # Prioritize: Status is MISSING or QUEUED.
+            # Prioritize: Status is MISSING only (not QUEUED - those are already in the worker queue)
             # Sort by added_at desc (Newest first), then by queue_order for manual prioritization
             # This ensures newest items are ALWAYS processed first, with queue_order as tiebreaker
             statement = select(MediaItem).where(
-                col(MediaItem.status).in_([PreviewStatus.MISSING, PreviewStatus.QUEUED])
+                MediaItem.status == PreviewStatus.MISSING
             ).order_by(MediaItem.added_at.desc(), MediaItem.queue_order.asc()).limit(batch_size)
 
             items = session.exec(statement).all()
@@ -987,9 +987,9 @@ class Scheduler:
                 return []
 
             with Session(engine) as session:
-                # Fetch items that are MISSING or QUEUED (not already being processed)
+                # Fetch items that are MISSING only (QUEUED items are already in the worker queue)
                 statement = select(MediaItem).where(
-                    col(MediaItem.status).in_([PreviewStatus.MISSING, PreviewStatus.QUEUED])
+                    MediaItem.status == PreviewStatus.MISSING
                 ).order_by(MediaItem.added_at.desc(), MediaItem.queue_order.asc()).limit(batch_size)
 
                 items = session.exec(statement).all()
