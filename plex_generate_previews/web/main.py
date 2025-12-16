@@ -777,13 +777,17 @@ async def get_stats(session: Session = Depends(get_session), user: str = Depends
     queued = session.exec(select(func.count(MediaItem.id)).where(MediaItem.status == PreviewStatus.QUEUED)).one()
     missing = session.exec(select(func.count(MediaItem.id)).where(MediaItem.status == PreviewStatus.MISSING)).one()
     processing = session.exec(select(func.count(MediaItem.id)).where(MediaItem.status == PreviewStatus.PROCESSING)).one()
-    
+    failed = session.exec(select(func.count(MediaItem.id)).where(
+        col(MediaItem.status).in_([PreviewStatus.FAILED, PreviewStatus.SLOW_FAILED])
+    )).one()
+
     return {
         "total": total,
         "completed": completed,
         "queued": queued,
         "missing": missing,
-        "processing": processing
+        "processing": processing,
+        "failed": failed
     }
 
 @app.get("/api/libraries")
