@@ -6,6 +6,33 @@
 [![Docker](https://img.shields.io/badge/docker-available-blue.svg)](https://hub.docker.com/repository/docker/stevezzau/plex_generate_vid_previews)
 [![codecov](https://codecov.io/gh/stevezau/plex_generate_vid_previews/branch/main/graph/badge.svg)](https://codecov.io/gh/stevezau/plex_generate_vid_previews)
 
+## 🔧 Fork Information
+
+This is a fork of [stevezau/plex_generate_vid_previews](https://github.com/stevezau/plex_generate_vid_previews) with additional enhancements focused on improving the web interface and queue management.
+
+### Key Enhancements in This Fork
+
+- **Multi-Part Media Support**: Properly handles media items with multiple versions (e.g., 1080p and 4K) by displaying each part as a separate row
+- **Broken Symlink Detection**: Automatically detects and marks media files with broken symlinks as MEDIA_MISSING, preventing wasted processing time
+- **Stale Item Cleanup**: Resets items stuck in PROCESSING/QUEUED status on startup, fixing issues after container restarts
+- **Improved Queue Management**:
+  - Prioritizes recently updated items (items with newly added parts)
+  - Fixes duplicate queueing for multi-part media
+  - Only processes items with status MISSING (not QUEUED items already in the worker queue)
+- **Enhanced Web UI**:
+  - Per-part status display showing which specific files need processing
+  - Failed counter in dashboard statistics
+  - Toast notifications instead of blocking JavaScript dialogs
+  - Expandable details for viewing file paths, bundle hashes, and error messages
+  - Media Missing status with purple badge for items with non-existent files
+- **Database Optimization**: Eliminates redundant Plex API calls during processing by using database-only operations
+- **Better Error Handling**:
+  - Auto-pauses queue on Plex connection errors instead of marking items as failed
+  - Processes all media parts even if one has a codec error
+  - Displays average processing speed in UI and logs
+
+For a complete list of changes, see [CHANGELOG.md](CHANGELOG.md).
+
 ## Table of Contents
 
 - [What This Tool Does](#what-this-tool-does)
