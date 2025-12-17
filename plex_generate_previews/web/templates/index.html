@@ -146,12 +146,21 @@
     </div>
 
     <!-- Actions -->
-    <div class="mb-6 flex space-x-4">
+    <div class="mb-6 flex flex-wrap items-center gap-4">
         <button @click="togglePause" class="px-4 py-2 rounded text-white font-bold transition" :class="paused ? 'bg-green-600 hover:bg-green-700' : 'bg-yellow-600 hover:bg-yellow-700'">
             <span x-text="paused ? '▶ Resume Queue' : '⏸ Pause Queue'"></span>
         </button>
         <button @click="triggerSync" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded">Force Sync</button>
         <button @click="fetchItems" class="bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded">Refresh List</button>
+
+        <!-- Last Sync Time -->
+        <div class="ml-auto flex items-center text-sm text-gray-400">
+            <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+            </svg>
+            <span>Last sync: </span>
+            <span class="ml-1 text-gray-300 font-medium" x-text="lastSyncAgo || 'Never'"></span>
+        </div>
     </div>
 
     <!-- Library Selector -->
@@ -434,6 +443,8 @@
                     onConfirm: () => {},
                     onCancel: () => {}
                 },
+                lastSyncTime: null, // Last sync timestamp from API
+                lastSyncAgo: 'Never', // Relative time string
 
                 get allSelected() {
                     // Get unique item_ids from current items
@@ -495,7 +506,7 @@
                     this.fetchQueueStatus();
                     this.fetchLibraries(); // Fetch libraries on init
                     this.fetchPlexClientIdentifier(); // Fetch Plex client identifier
-                    
+
                     // Poll stats every 5 seconds
                     setInterval(() => {
                         this.fetchStats();
@@ -506,13 +517,41 @@
                              this.fetchItems(true); // Silent refresh
                         }
                     }, 5000);
+
+                    // Update relative time display every 10 seconds
+                    setInterval(() => {
+                        this.updateLastSyncAgo();
+                    }, 10000);
                 },
                 
                 formatDate(dateString) {
                     if (!dateString) return '-';
-                    return new Date(dateString).toLocaleDateString(undefined, { 
-                        year: 'numeric', month: 'short', day: 'numeric' 
+                    return new Date(dateString).toLocaleDateString(undefined, {
+                        year: 'numeric', month: 'short', day: 'numeric'
                     });
+                },
+
+                updateLastSyncAgo() {
+                    if (!this.lastSyncTime) {
+                        this.lastSyncAgo = 'Never';
+                        return;
+                    }
+
+                    const now = new Date();
+                    const diff = Math.floor((now - this.lastSyncTime) / 1000); // seconds
+
+                    if (diff < 60) {
+                        this.lastSyncAgo = `${diff}s ago`;
+                    } else if (diff < 3600) {
+                        const mins = Math.floor(diff / 60);
+                        this.lastSyncAgo = `${mins}min ago`;
+                    } else if (diff < 86400) {
+                        const hours = Math.floor(diff / 3600);
+                        this.lastSyncAgo = `${hours}hr ago`;
+                    } else {
+                        const days = Math.floor(diff / 86400);
+                        this.lastSyncAgo = `${days}d ago`;
+                    }
                 },
 
                 async fetchPlexClientIdentifier() {
@@ -568,7 +607,14 @@
                 async fetchStats() {
                     try {
                         const res = await fetch('/api/stats');
-                        this.stats = await res.json();
+                        const data = await res.json();
+                        this.stats = data;
+
+                        // Update last sync time if available
+                        if (data.last_sync_time) {
+                            this.lastSyncTime = new Date(data.last_sync_time);
+                            this.updateLastSyncAgo();
+                        }
                     } catch (e) { console.error(e); }
                 },
                 

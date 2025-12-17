@@ -782,6 +782,10 @@ async def get_stats(session: Session = Depends(get_session), user: str = Depends
     )).one()
     media_missing = session.exec(select(func.count(MediaItem.id)).where(MediaItem.status == PreviewStatus.MEDIA_MISSING)).one()
 
+    # Get last sync time from AppSettings
+    settings = session.get(AppSettings, 1)
+    last_sync_time = settings.last_sync_time if settings else None
+
     return {
         "total": total,
         "completed": completed,
@@ -789,7 +793,8 @@ async def get_stats(session: Session = Depends(get_session), user: str = Depends
         "missing": missing,
         "processing": processing,
         "failed": failed,
-        "media_missing": media_missing
+        "media_missing": media_missing,
+        "last_sync_time": last_sync_time.isoformat() if last_sync_time else None
     }
 
 @app.get("/api/libraries")
