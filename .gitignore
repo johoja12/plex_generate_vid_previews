@@ -39,3 +39,8 @@ coverage.xml
 .pytest_cache/
 .tox/
 test_env/
+
+# Database files (runtime data)
+config/plex_previews.db
+config/plex_previews.db-shm
+config/plex_previews.db-wal
