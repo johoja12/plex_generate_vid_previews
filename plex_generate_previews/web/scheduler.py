@@ -316,6 +316,11 @@ class Scheduler:
                         cpu_workers=self.config.cpu_threads,
                         selected_gpus=selected_gpus
                     )
+
+                    # Cleanup stale items after worker pool is initialized
+                    # This ensures items stuck in PROCESSING/QUEUED from previous sessions get reset
+                    logger.info("Running startup cleanup of stale items...")
+                    self.cleanup_stale_items()
         except Exception as e:
             logger.error(f"Error loading config: {e}")
             self.config = None
@@ -790,6 +795,96 @@ class Scheduler:
             logger.error(traceback.format_exc())
             return {"verified": 0, "moved_to_missing": 0, "error": str(e)}
 
+    def cleanup_stale_items(self):
+        """Reset stale PROCESSING/QUEUED items to MISSING.
+
+        This handles items that were left in PROCESSING or QUEUED status when:
+        - The application was restarted
+        - Workers crashed or were killed
+        - Errors occurred that weren't properly handled
+
+        Also checks for broken symlinks and marks them as MEDIA_MISSING.
+
+        Returns:
+            dict: Counts of items reset by status
+        """
+        logger.info("Cleaning up stale PROCESSING/QUEUED items...")
+
+        try:
+            import json
+            with Session(engine) as session:
+                # Get all PROCESSING and QUEUED items
+                statement = select(MediaItem).where(
+                    col(MediaItem.status).in_([PreviewStatus.PROCESSING, PreviewStatus.QUEUED])
+                )
+                stale_items = session.exec(statement).all()
+
+                processing_count = 0
+                queued_count = 0
+                media_missing_count = 0
+
+                for item in stale_items:
+                    if item.status == PreviewStatus.PROCESSING:
+                        processing_count += 1
+                    else:
+                        queued_count += 1
+
+                    # Check if media files exist (detect broken symlinks)
+                    media_exists = False
+                    if item.media_parts_info:
+                        try:
+                            parts = json.loads(item.media_parts_info)
+                            # Check if at least one part exists
+                            for part in parts:
+                                file_path = part.get('file_path')
+                                if file_path and os.path.exists(file_path):
+                                    media_exists = True
+                                    break
+                        except (json.JSONDecodeError, KeyError):
+                            # If we can't parse media_parts_info, check file_path as fallback
+                            if item.file_path and os.path.exists(item.file_path):
+                                media_exists = True
+                    elif item.file_path and os.path.exists(item.file_path):
+                        # Fallback to file_path for backwards compatibility
+                        media_exists = True
+
+                    if not media_exists:
+                        # Media file doesn't exist (broken symlink or deleted)
+                        item.status = PreviewStatus.MEDIA_MISSING
+                        item.progress = 0
+                        item.error_message = "Media file not found (broken symlink or deleted)"
+                        media_missing_count += 1
+                        logger.debug(f"Media missing for item {item.id} ({item.title})")
+                    else:
+                        # Reset to MISSING for re-processing
+                        item.status = PreviewStatus.MISSING
+                        item.progress = 0
+                        # Update timestamp so it gets re-queued soon
+                        item.updated_at = datetime.utcnow()
+
+                    session.add(item)
+
+                session.commit()
+
+                total_reset = processing_count + queued_count
+                if total_reset > 0:
+                    logger.info(f"Reset {total_reset} stale items (PROCESSING: {processing_count}, QUEUED: {queued_count}, MEDIA_MISSING: {media_missing_count})")
+                else:
+                    logger.debug("No stale items found")
+
+                return {
+                    "total_reset": total_reset,
+                    "processing_reset": processing_count,
+                    "queued_reset": queued_count,
+                    "media_missing": media_missing_count
+                }
+
+        except Exception as e:
+            logger.error(f"Stale item cleanup failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {"error": str(e)}
+
     def sync_library(self):
         logger.debug("Syncing library with Plex...")
         try:
@@ -832,18 +927,38 @@ class Scheduler:
                         # Check if BIF exists using pre-scanned map (no filesystem access)
                         bif_exists = bundle_hash and bundle_hash in bundle_hash_map
 
+                        # Check if media files exist (detect broken symlinks)
+                        media_exists = False
+                        if media_parts:
+                            for file_path, _ in media_parts:
+                                if file_path and os.path.exists(file_path):
+                                    media_exists = True
+                                    break
+
                         if not db_item:
                             # Create new
+                            # Determine initial status based on BIF existence and media file existence
+                            if not media_exists:
+                                initial_status = PreviewStatus.MEDIA_MISSING
+                                initial_progress = 0
+                            elif bif_exists:
+                                initial_status = PreviewStatus.COMPLETED
+                                initial_progress = 100
+                            else:
+                                initial_status = PreviewStatus.MISSING
+                                initial_progress = 0
+
                             new_item = MediaItem(
                                 id=int(item_key),
                                 title=title,
                                 media_type=MediaType.MOVIE if item_type == 'movie' else MediaType.EPISODE,
                                 library_name=section.title,
-                                status=PreviewStatus.COMPLETED if bif_exists else PreviewStatus.MISSING,
-                                progress=100 if bif_exists else 0,
+                                status=initial_status,
+                                progress=initial_progress,
                                 bundle_hash=bundle_hash,
                                 media_parts_info=media_parts_json,
-                                added_at=added_at if added_at else datetime.utcnow()
+                                added_at=added_at if added_at else datetime.utcnow(),
+                                error_message="Media file not found (broken symlink or deleted)" if not media_exists else None
                             )
                             session.add(new_item)
                         else:
@@ -862,25 +977,44 @@ class Scheduler:
                                 db_item.added_at = added_at
                                 session.add(db_item)
 
-                            # Check if any parts are missing BIF files
-                            any_missing_bif = False
-                            if media_parts_json:
-                                parts_data = json.loads(media_parts_json)
-                                any_missing_bif = any(part.get('bif_path') is None for part in parts_data)
+                            # Check if media files exist - if not, mark as MEDIA_MISSING
+                            if not media_exists:
+                                # Media file doesn't exist (broken symlink or deleted)
+                                if db_item.status != PreviewStatus.MEDIA_MISSING:
+                                    logger.info(f"Item {item_key} ({title}) has missing media files - marking as MEDIA_MISSING")
+                                    db_item.status = PreviewStatus.MEDIA_MISSING
+                                    db_item.progress = 0
+                                    db_item.error_message = "Media file not found (broken symlink or deleted)"
+                                    session.add(db_item)
+                            else:
+                                # Media exists - check BIF status
+                                # Check if any parts are missing BIF files
+                                any_missing_bif = False
+                                if media_parts_json:
+                                    parts_data = json.loads(media_parts_json)
+                                    any_missing_bif = any(part.get('bif_path') is None for part in parts_data)
 
-                            # If item is completed but has parts without BIF files, reset to missing
-                            # This handles the case where a new version is added (e.g., 4K added to existing 1080p)
-                            if db_item.status == PreviewStatus.COMPLETED and any_missing_bif:
-                                logger.info(f"Item {item_key} ({title}) is completed but has new parts without BIF files - resetting to missing")
-                                db_item.status = PreviewStatus.MISSING
-                                db_item.progress = 0
-                                db_item.updated_at = datetime.utcnow()  # Update timestamp so it gets queued soon
-                                session.add(db_item)
-                            # If existing item is missing/queued/processing but BIF exists, mark completed
-                            elif db_item.status != PreviewStatus.COMPLETED and bif_exists and not any_missing_bif:
-                                db_item.status = PreviewStatus.COMPLETED
-                                db_item.progress = 100
-                                session.add(db_item)
+                                # If item is completed but has parts without BIF files, reset to missing
+                                # This handles the case where a new version is added (e.g., 4K added to existing 1080p)
+                                if db_item.status == PreviewStatus.COMPLETED and any_missing_bif:
+                                    logger.info(f"Item {item_key} ({title}) is completed but has new parts without BIF files - resetting to missing")
+                                    db_item.status = PreviewStatus.MISSING
+                                    db_item.progress = 0
+                                    db_item.updated_at = datetime.utcnow()  # Update timestamp so it gets queued soon
+                                    session.add(db_item)
+                                # If existing item is missing/queued/processing but BIF exists, mark completed
+                                elif db_item.status != PreviewStatus.COMPLETED and bif_exists and not any_missing_bif:
+                                    db_item.status = PreviewStatus.COMPLETED
+                                    db_item.progress = 100
+                                    session.add(db_item)
+                                # If item was MEDIA_MISSING but media now exists, reset to MISSING for processing
+                                elif db_item.status == PreviewStatus.MEDIA_MISSING:
+                                    logger.info(f"Item {item_key} ({title}) media file now exists - resetting to MISSING")
+                                    db_item.status = PreviewStatus.MISSING
+                                    db_item.progress = 0
+                                    db_item.error_message = None
+                                    db_item.updated_at = datetime.utcnow()
+                                    session.add(db_item)
 
                 # Step 3: Clean up orphaned items (items in DB but no longer in Plex)
                 logger.debug(f"Found {len(plex_item_ids)} items in Plex")

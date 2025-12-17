@@ -780,6 +780,7 @@ async def get_stats(session: Session = Depends(get_session), user: str = Depends
     failed = session.exec(select(func.count(MediaItem.id)).where(
         col(MediaItem.status).in_([PreviewStatus.FAILED, PreviewStatus.SLOW_FAILED])
     )).one()
+    media_missing = session.exec(select(func.count(MediaItem.id)).where(MediaItem.status == PreviewStatus.MEDIA_MISSING)).one()
 
     return {
         "total": total,
@@ -787,7 +788,8 @@ async def get_stats(session: Session = Depends(get_session), user: str = Depends
         "queued": queued,
         "missing": missing,
         "processing": processing,
-        "failed": failed
+        "failed": failed,
+        "media_missing": media_missing
     }
 
 @app.get("/api/libraries")

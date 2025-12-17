@@ -11,6 +11,7 @@ class PreviewStatus(str, Enum):
     FAILED = "failed"
     SLOW_FAILED = "slow_failed"
     IGNORED = "ignored"
+    MEDIA_MISSING = "media_missing"  # Media file doesn't exist (broken symlink, deleted file)
 
 class MediaType(str, Enum):
     MOVIE = "movie"

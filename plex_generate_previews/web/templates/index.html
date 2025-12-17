@@ -114,7 +114,7 @@
     </nav>
 
     <!-- Stats Grid -->
-    <div class="grid grid-cols-1 md:grid-cols-6 gap-4 mb-8">
+    <div class="grid grid-cols-1 md:grid-cols-7 gap-4 mb-8">
         <div class="card border-l-4 border-blue-500">
             <h3 class="text-gray-400 text-sm">Total Items</h3>
             <p class="text-2xl font-bold" x-text="stats.total">0</p>
@@ -138,6 +138,10 @@
         <div class="card border-l-4 border-red-700">
             <h3 class="text-gray-400 text-sm">Failed</h3>
             <p class="text-2xl font-bold" x-text="stats.failed">0</p>
+        </div>
+        <div class="card border-l-4 border-purple-700">
+            <h3 class="text-gray-400 text-sm">Media Missing</h3>
+            <p class="text-2xl font-bold" x-text="stats.media_missing">0</p>
         </div>
     </div>
 
@@ -253,7 +257,8 @@
                                 'text-orange-500': item.status === 'queued',
                                 'text-red-500': item.status === 'missing',
                                 'text-red-700': item.status === 'failed',
-                                'text-purple-500': item.status === 'slow_failed'
+                                'text-purple-500': item.status === 'slow_failed',
+                                'text-purple-700': item.status === 'media_missing'
                             }" x-text="item.status.replace('_', ' ')" class="uppercase text-xs font-bold bg-gray-900 px-2 py-1 rounded"></span>
                         </td>
                         <td class="py-3 pr-2">
@@ -282,7 +287,7 @@
                                         ⟳ Reset
                                     </button>
                                 </template>
-                                <template x-if="item.status === 'failed' || item.status === 'slow_failed'">
+                                <template x-if="item.status === 'failed' || item.status === 'slow_failed' || item.status === 'media_missing'">
                                     <button @click="resetToMissing(item.item_id)" class="text-xs bg-red-900/50 hover:bg-red-900 text-red-200 px-2 py-1 rounded" title="Reset to Missing">
                                         ⟳ Reset
                                     </button>
@@ -292,12 +297,12 @@
                                         ⟳ Regen
                                     </button>
                                 </template>
-                                <template x-if="item.status !== 'completed' && item.status !== 'failed' && item.status !== 'slow_failed'">
+                                <template x-if="item.status !== 'completed' && item.status !== 'failed' && item.status !== 'slow_failed' && item.status !== 'media_missing'">
                                     <button @click="markCompleted(item.item_id)" class="text-xs bg-green-900/50 hover:bg-green-900 text-green-200 px-2 py-1 rounded" title="Mark as Completed">
                                         ✓ Done
                                     </button>
                                 </template>
-                                <template x-if="item.status !== 'failed' && item.status !== 'slow_failed'">
+                                <template x-if="item.status !== 'failed' && item.status !== 'slow_failed' && item.status !== 'media_missing'">
                                     <button @click="markFailed(item.item_id)" class="text-xs bg-red-800/50 hover:bg-red-800 text-red-200 px-2 py-1 rounded" title="Mark as Failed">
                                         ✗ Failed
                                     </button>
@@ -326,10 +331,14 @@
                                         </div>
                                     </div>
 
-                                    <!-- Error Details (for failed items) -->
+                                    <!-- Error Details (for failed and media_missing items) -->
                                     <div x-show="item.status === 'failed' || item.status === 'slow_failed'" class="bg-red-900/20 border border-red-700 rounded p-3">
                                         <h4 class="font-bold text-red-400 mb-2">❌ Error Details:</h4>
                                         <p class="text-red-300 font-mono text-xs break-all" x-text="item.error_message || 'No error message available'"></p>
+                                    </div>
+                                    <div x-show="item.status === 'media_missing'" class="bg-purple-900/20 border border-purple-700 rounded p-3">
+                                        <h4 class="font-bold text-purple-400 mb-2">⚠️ Media Missing:</h4>
+                                        <p class="text-purple-300 font-mono text-xs break-all" x-text="item.error_message || 'Media file not found (broken symlink or deleted file)'"></p>
                                     </div>
 
                                     <!-- File Paths -->
