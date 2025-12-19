@@ -241,7 +241,6 @@ def get_media_parts_from_database(plex_config_folder: str, rating_key: int):
         conn.close()
 
         if results:
-            logger.debug(f"Found {len(results)} media part(s) in database for item {rating_key}")
             return [(file_path, bundle_hash) for file_path, bundle_hash in results if file_path]
         else:
             logger.warning(f"No media parts found in database for item {rating_key}")
