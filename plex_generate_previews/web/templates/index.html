@@ -154,12 +154,15 @@
         <button @click="fetchItems" class="bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded">Refresh List</button>
 
         <!-- Last Sync Time -->
-        <div class="ml-auto flex items-center text-sm text-gray-400">
-            <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-            </svg>
-            <span>Last sync: </span>
-            <span class="ml-1 text-gray-300 font-medium" x-text="lastSyncAgo || 'Never'"></span>
+        <div class="ml-auto flex flex-col items-end text-sm text-gray-400">
+            <div class="flex items-center">
+                <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                </svg>
+                <span>Last sync: </span>
+                <span class="ml-1 text-gray-300 font-medium" x-text="lastSyncAgo || 'Never'"></span>
+            </div>
+            <div x-show="lastSyncSummary" class="mt-1 text-xs text-gray-500" x-html="lastSyncSummary"></div>
         </div>
     </div>
 
@@ -446,6 +449,7 @@
                 },
                 lastSyncTime: null, // Last sync timestamp from API
                 lastSyncAgo: 'Never', // Relative time string
+                lastSyncSummary: '', // Formatted sync summary
 
                 get allSelected() {
                     // Get unique item_ids from current items
@@ -555,6 +559,45 @@
                     }
                 },
 
+                formatSyncSummary(summaryJson) {
+                    if (!summaryJson) {
+                        this.lastSyncSummary = '';
+                        return;
+                    }
+
+                    try {
+                        const summary = JSON.parse(summaryJson);
+                        const parts = [];
+
+                        // Format movies
+                        if (summary.movies_added > 0) {
+                            parts.push(`${summary.movies_added} movie${summary.movies_added > 1 ? 's' : ''} added`);
+                        }
+                        if (summary.movies_updated > 0) {
+                            parts.push(`${summary.movies_updated} movie${summary.movies_updated > 1 ? 's' : ''} updated`);
+                        }
+                        if (summary.movies_deleted > 0) {
+                            parts.push(`${summary.movies_deleted} movie${summary.movies_deleted > 1 ? 's' : ''} deleted`);
+                        }
+
+                        // Format episodes
+                        if (summary.episodes_added > 0) {
+                            parts.push(`${summary.episodes_added} episode${summary.episodes_added > 1 ? 's' : ''} added`);
+                        }
+                        if (summary.episodes_updated > 0) {
+                            parts.push(`${summary.episodes_updated} episode${summary.episodes_updated > 1 ? 's' : ''} updated`);
+                        }
+                        if (summary.episodes_deleted > 0) {
+                            parts.push(`${summary.episodes_deleted} episode${summary.episodes_deleted > 1 ? 's' : ''} deleted`);
+                        }
+
+                        this.lastSyncSummary = parts.length > 0 ? parts.join(', ') : 'No changes';
+                    } catch (e) {
+                        console.error('Error parsing sync summary:', e);
+                        this.lastSyncSummary = '';
+                    }
+                },
+
                 async fetchPlexClientIdentifier() {
                     try {
                         console.log('Fetching Plex client identifier from /api/settings/plex-identifier');
@@ -615,6 +658,11 @@
                         if (data.last_sync_time) {
                             this.lastSyncTime = new Date(data.last_sync_time);
                             this.updateLastSyncAgo();
+                        }
+
+                        // Update sync summary if available
+                        if (data.last_sync_summary) {
+                            this.formatSyncSummary(data.last_sync_summary);
                         }
                     } catch (e) { console.error(e); }
                 },

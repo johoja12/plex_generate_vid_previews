@@ -888,6 +888,16 @@ class Scheduler:
     def sync_library(self):
         logger.debug("Syncing library with Plex...")
         try:
+            # Track sync statistics
+            sync_stats = {
+                "movies_added": 0,
+                "movies_updated": 0,
+                "movies_deleted": 0,
+                "episodes_added": 0,
+                "episodes_updated": 0,
+                "episodes_deleted": 0,
+            }
+
             # Step 1: Scan filesystem once for all BIF files
             bundle_hash_map = self._scan_filesystem_for_bifs()
             logger.debug(f"Found {len(bundle_hash_map)} existing BIF files in filesystem")
@@ -961,7 +971,16 @@ class Scheduler:
                                 error_message="Media file not found (broken symlink or deleted)" if not media_exists else None
                             )
                             session.add(new_item)
+
+                            # Track addition in sync stats
+                            if item_type == 'movie':
+                                sync_stats["movies_added"] += 1
+                            else:
+                                sync_stats["episodes_added"] += 1
                         else:
+                            # Track if this item gets updated
+                            item_updated = False
+
                             # Update hash if missing
                             if not db_item.bundle_hash and bundle_hash:
                                 db_item.bundle_hash = bundle_hash
@@ -986,6 +1005,7 @@ class Scheduler:
                                     db_item.progress = 0
                                     db_item.error_message = "Media file not found (broken symlink or deleted)"
                                     session.add(db_item)
+                                    item_updated = True
                             else:
                                 # Media exists - check BIF status
                                 # Check if any parts are missing BIF files
@@ -1002,11 +1022,13 @@ class Scheduler:
                                     db_item.progress = 0
                                     db_item.updated_at = datetime.utcnow()  # Update timestamp so it gets queued soon
                                     session.add(db_item)
+                                    item_updated = True
                                 # If existing item is missing/queued/processing but BIF exists, mark completed
                                 elif db_item.status != PreviewStatus.COMPLETED and bif_exists and not any_missing_bif:
                                     db_item.status = PreviewStatus.COMPLETED
                                     db_item.progress = 100
                                     session.add(db_item)
+                                    item_updated = True
                                 # If item was MEDIA_MISSING but media now exists, reset to MISSING for processing
                                 elif db_item.status == PreviewStatus.MEDIA_MISSING:
                                     logger.info(f"Item {item_key} ({title}) media file now exists - resetting to MISSING")
@@ -1015,6 +1037,14 @@ class Scheduler:
                                     db_item.error_message = None
                                     db_item.updated_at = datetime.utcnow()
                                     session.add(db_item)
+                                    item_updated = True
+
+                            # Track update in sync stats
+                            if item_updated:
+                                if db_item.media_type == MediaType.MOVIE:
+                                    sync_stats["movies_updated"] += 1
+                                else:
+                                    sync_stats["episodes_updated"] += 1
 
                 # Step 3: Clean up orphaned items (items in DB but no longer in Plex)
                 logger.debug(f"Found {len(plex_item_ids)} items in Plex")
@@ -1036,6 +1066,11 @@ class Scheduler:
                         orphaned_item = session.get(MediaItem, orphaned_id)
                         if orphaned_item:
                             logger.debug(f"Removing orphaned item: {orphaned_id} ({orphaned_item.title})")
+                            # Track deletion in sync stats
+                            if orphaned_item.media_type == MediaType.MOVIE:
+                                sync_stats["movies_deleted"] += 1
+                            else:
+                                sync_stats["episodes_deleted"] += 1
                             session.delete(orphaned_item)
 
                     logger.info(f"Removed {len(orphaned_ids)} orphaned items from database")
@@ -1044,19 +1079,21 @@ class Scheduler:
 
                 session.commit()
             
-            # Save last sync time to AppSettings
+            # Save last sync time and summary to AppSettings
+            import json
             new_last_sync_time = None
             with Session(engine) as settings_session:
                 settings = settings_session.get(AppSettings, 1)
                 if not settings:
                     settings = AppSettings(id=1) # Should exist if config was loaded
                 settings.last_sync_time = datetime.utcnow()
+                settings.last_sync_summary = json.dumps(sync_stats)
                 settings_session.add(settings)
                 settings_session.commit()
                 new_last_sync_time = settings.last_sync_time # Extract value while session is open
             self.last_sync_time = new_last_sync_time # Assign after session is closed
-            
-            logger.info("Library sync complete.")
+
+            logger.info(f"Library sync complete. {sync_stats}")
         except Exception as e:
             logger.error(f"Sync failed: {e}")
 

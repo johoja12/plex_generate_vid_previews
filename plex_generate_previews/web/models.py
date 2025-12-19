@@ -36,7 +36,8 @@ class AppSettings(SQLModel, table=True):
     scheduler_loop_interval: int = 5 # Default to 5 seconds
     sync_interval: int = 21600  # Sync interval in seconds (default: 6 hours)
     last_sync_time: Optional[datetime] = None
-    
+    last_sync_summary: Optional[str] = None  # JSON summary of last sync (items added/updated/deleted)
+
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 class MediaItem(SQLModel, table=True):
