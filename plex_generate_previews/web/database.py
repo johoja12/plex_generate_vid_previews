@@ -129,6 +129,13 @@ def create_db_and_tables():
     except Exception:
         pass
 
+    # Migration: Add current_processing_bundle_hash to MediaItem
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("ALTER TABLE mediaitem ADD COLUMN current_processing_bundle_hash VARCHAR"))
+    except Exception:
+        pass
+
 def get_session():
     with Session(engine) as session:
         yield session

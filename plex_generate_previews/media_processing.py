@@ -951,10 +951,17 @@ def process_item(item_key: str, gpu: Optional[str], gpu_device_path: Optional[st
         if not _ensure_directories(indexes_path, tmp_path, media_file):
             continue
 
+        # Wrap progress callback to include bundle_hash
+        part_progress_callback = None
+        if progress_callback:
+            def part_progress_callback(*args, **kwargs):
+                kwargs['bundle_hash'] = bundle_hash
+                return progress_callback(*args, **kwargs)
+
         # Generate images and create BIF file
         try:
             _generate_and_save_bif(media_file, tmp_path, index_bif, gpu, gpu_device_path,
-                                  config, progress_callback)
+                                  config, part_progress_callback)
             # Mark that we successfully processed this media part
             processed_any = True
         except CodecNotSupportedError as e:

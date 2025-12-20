@@ -62,6 +62,7 @@ class Worker:
         self.media_title = ""
         self.media_type = ""
         self.media_file = ""  # Actual file path being processed
+        self.bundle_hash = None # Bundle hash of current part
         self.title_max_width = 20
         self.progress_task_id = None
         self.ffmpeg_started = False  # Track if FFmpeg has started outputting progress
@@ -158,6 +159,7 @@ class Worker:
         self.media_title = media_title
         self.media_type = media_type
         self.media_file = ""  # Will be populated by progress callback
+        self.bundle_hash = None # Will be populated by progress callback
         self.title_max_width = title_max_width
         self.display_title = format_display_title(media_title, media_type, title_max_width)
         # Show GPU name in display for GPU workers, show CPU identifier for CPU workers
@@ -328,6 +330,7 @@ class Worker:
             'failed': self.failed_state,
             'error_message': self.error_message,  # Error message for failed tasks
             'media_file': self.media_file,  # Media file path being processed
+            'bundle_hash': self.bundle_hash, # Bundle hash being processed
             # FFmpeg data for display
             'frame': self.frame,
             'fps': self.fps,
@@ -780,7 +783,7 @@ class WorkerPool:
         logger.info(f'Processing complete: {", ".join(stats_parts)}')
     
     def _update_worker_progress(self, worker, progress_percent, current_duration, total_duration, speed=None,
-                               remaining_time=None, frame=0, fps=0, q=0, size=0, time_str="00:00:00.00", bitrate=0, media_file=None, failed=False, error_message=None, avg_speed=None):
+                               remaining_time=None, frame=0, fps=0, q=0, size=0, time_str="00:00:00.00", bitrate=0, media_file=None, failed=False, error_message=None, avg_speed=None, bundle_hash=None):
         """Update worker progress data from callback."""
         # Use thread-safe updates to prevent race conditions
         with self._progress_lock:
@@ -801,6 +804,10 @@ class WorkerPool:
             # Store media file path if provided
             if media_file:
                 worker.media_file = media_file
+
+            # Store bundle hash if provided
+            if bundle_hash:
+                worker.bundle_hash = bundle_hash
 
             # Store FFmpeg data for display
             worker.frame = frame

@@ -130,6 +130,7 @@ class DbProgressManager:
         progress = data.get('progress_percent', 0)
         error_message = data.get('error_message')
         media_file = data.get('media_file')
+        bundle_hash = data.get('bundle_hash')
         avg_speed = data.get('avg_speed')
 
         if data.get('failed'):
@@ -144,6 +145,8 @@ class DbProgressManager:
             item.error_message = error_message
             if avg_speed:
                 item.avg_speed = avg_speed
+            if bundle_hash:
+                item.current_processing_bundle_hash = bundle_hash
 
         elif progress >= 100:
             # Completed
@@ -152,10 +155,16 @@ class DbProgressManager:
             item.error_message = None
             if avg_speed:
                 item.avg_speed = avg_speed
-            # Set BIF path if we have a bundle hash
-            if item.bundle_hash:
+            if bundle_hash:
+                item.current_processing_bundle_hash = bundle_hash
+            
+            # Set BIF path if we have a bundle hash (using primary hash if available, or the one just processed)
+            # Note: For multi-part items, this might just set the path to the last processed one, 
+            # which is fine as MediaItem.bif_path is mostly for legacy/single-part compatibility.
+            target_hash = bundle_hash if bundle_hash else item.bundle_hash
+            if target_hash:
                 from ..utils import sanitize_path
-                bundle_file = sanitize_path(f'{item.bundle_hash[0]}/{item.bundle_hash[1::1]}.bundle')
+                bundle_file = sanitize_path(f'{target_hash[0]}/{target_hash[1::1]}.bundle')
                 bundle_path = sanitize_path(os.path.join(
                     scheduler.config.plex_config_folder if scheduler.config else '/config/plex',
                     'Media', 'localhost', bundle_file
@@ -173,6 +182,20 @@ class DbProgressManager:
                 item.avg_speed = avg_speed
             if media_file:
                 item.file_path = media_file
+            if bundle_hash:
+                item.current_processing_bundle_hash = bundle_hash
+        
+        elif progress == 0 and not data.get('failed'):
+            # Started processing a new part (0% progress)
+            # Don't reset status if it was already processing (e.g. part 2 starting after part 1)
+            if item.status == PreviewStatus.COMPLETED:
+                item.status = PreviewStatus.PROCESSING
+            elif item.status == PreviewStatus.MISSING or item.status == PreviewStatus.QUEUED:
+                item.status = PreviewStatus.PROCESSING
+            
+            item.progress = 0
+            if bundle_hash:
+                item.current_processing_bundle_hash = bundle_hash
 
     def update_main_progress(self, completed, total):
         pass

@@ -725,24 +725,26 @@ class TestProcessItem:
     @patch('os.path.isdir')
     @patch('os.makedirs')
     @patch('shutil.rmtree')
-    def test_process_item_success(self, mock_rmtree, mock_makedirs, mock_isdir, 
+    @patch('plex_generate_previews.plex_client.get_media_parts_from_database')
+    def test_process_item_success(self, mock_get_parts, mock_rmtree, mock_makedirs, mock_isdir, 
                                   mock_isfile, mock_gen_images, mock_gen_bif, 
                                   mock_config, plex_xml_movie_tree):
         """Test successful processing of a media item."""
-        # Mock Plex query response
+        # Mock Plex query response (no longer used by process_item but kept for compatibility)
         mock_plex = MagicMock()
         
-        import xml.etree.ElementTree as ET
-        mock_plex.query.return_value = ET.fromstring(plex_xml_movie_tree)
+        # Mock database response
+        # Returns list of (file_path, bundle_hash)
+        mock_get_parts.return_value = [("/library/metadata/54321/file.mkv", "hash123")]
         
         # Mock file system - media file exists but index.bif doesn't
         def isfile_side_effect(path):
             # Media files exist, but not BIF files
             return '.bif' not in path
-        
+    
         mock_isfile.side_effect = isfile_side_effect
         mock_isdir.return_value = False  # Directories don't exist yet
-        
+    
         # Set config paths
         mock_config.plex_config_folder = "/config/plex"
         mock_config.tmp_folder = "/tmp"
@@ -752,7 +754,7 @@ class TestProcessItem:
         
         # Simulate successful image generation: (success, image_count, hw, seconds, speed)
         mock_gen_images.return_value = (True, 3, False, 1.2, "1.0x")
-        process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
+        process_item("54321", None, None, mock_config, mock_plex)
         
         # Verify images and BIF were generated
         assert mock_gen_images.called
@@ -764,14 +766,15 @@ class TestProcessItem:
     @patch('os.path.isdir')
     @patch('os.makedirs')
     @patch('shutil.rmtree')
-    def test_process_item_path_mapping(self, mock_rmtree, mock_makedirs, mock_isdir, 
+    @patch('plex_generate_previews.plex_client.get_media_parts_from_database')
+    def test_process_item_path_mapping(self, mock_get_parts, mock_rmtree, mock_makedirs, mock_isdir, 
                                        mock_isfile, mock_gen_images, mock_gen_bif, 
                                        mock_config, plex_xml_movie_tree):
         """Test that path mapping is applied correctly."""
         mock_plex = MagicMock()
         
-        import xml.etree.ElementTree as ET
-        mock_plex.query.return_value = ET.fromstring(plex_xml_movie_tree)
+        # Mock database response with original path
+        mock_get_parts.return_value = [("/data/movies/movie.mkv", "hash123")]
         
         # Configure path mapping
         mock_config.plex_videos_path_mapping = "/data"
@@ -789,7 +792,7 @@ class TestProcessItem:
         mock_isdir.return_value = False  # Directories don't exist yet
         
         mock_gen_images.return_value = (True, 2, False, 1.0, "1.0x")
-        process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
+        process_item("54321", None, None, mock_config, mock_plex)
         
         # Verify generate_images was called with mapped path
         assert mock_gen_images.called
@@ -798,12 +801,13 @@ class TestProcessItem:
         assert called_path.startswith("/mnt/videos")
     
     @patch('os.path.isfile')
-    def test_process_item_missing_file(self, mock_isfile, mock_config, plex_xml_movie_tree):
+    @patch('plex_generate_previews.plex_client.get_media_parts_from_database')
+    def test_process_item_missing_file(self, mock_get_parts, mock_isfile, mock_config, plex_xml_movie_tree):
         """Test handling of missing video file."""
         mock_plex = MagicMock()
         
-        import xml.etree.ElementTree as ET
-        mock_plex.query.return_value = ET.fromstring(plex_xml_movie_tree)
+        # Mock database response
+        mock_get_parts.return_value = [("/path/to/movie.mkv", "hash123")]
         
         # File doesn't exist
         mock_isfile.return_value = False
@@ -814,17 +818,26 @@ class TestProcessItem:
         
         # Should raise RuntimeError because all parts were skipped
         with pytest.raises(RuntimeError) as excinfo:
-            process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
+            process_item("54321", None, None, mock_config, mock_plex)
         
         assert "No media parts were successfully processed" in str(excinfo.value)
     
-    def test_process_item_plex_api_error(self, mock_config):
-        """Test handling of Plex API errors."""
+    @patch('plex_generate_previews.plex_client.get_media_parts_from_database')
+    def test_process_item_plex_api_error(self, mock_get_parts, mock_config):
+        """Test handling of Plex API errors (ensure plex object usage doesn't crash)."""
         mock_plex = MagicMock()
         mock_plex.query.side_effect = Exception("Plex API error")
         
-        # Should not crash
-        process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
+        # Mock database response
+        mock_get_parts.return_value = [("/path/to/movie.mkv", "hash123")]
+        
+        # Should not crash even if Plex API is broken (since we use DB now)
+        # However, we need to mock other things like isfile if we get that far
+        with patch('os.path.isfile', return_value=True), \
+             patch('plex_generate_previews.media_processing._ensure_directories', return_value=True), \
+             patch('plex_generate_previews.media_processing._generate_and_save_bif'):
+            
+            process_item("54321", None, None, mock_config, mock_plex)
 
 
 class TestMediaInfoImport:

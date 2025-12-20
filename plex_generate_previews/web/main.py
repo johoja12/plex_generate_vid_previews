@@ -893,22 +893,37 @@ async def get_items(
                 import os
                 parts = json.loads(item.media_parts_info)
                 for idx, part in enumerate(parts):
-                    # Determine part status based on BIF existence first
+                    # Determine part status based on processing state and BIF existence
                     bif_exists = part.get('bif_path') and os.path.exists(part.get('bif_path'))
+                    part_bundle_hash = part.get('bundle_hash')
+                    
+                    # Check if this specific part is the one being processed
+                    is_processing_this_part = (
+                        item.current_processing_bundle_hash == part_bundle_hash 
+                        if item.current_processing_bundle_hash and part_bundle_hash else False
+                    )
 
-                    if bif_exists:
-                        # BIF exists - this part is completed regardless of parent status
+                    part_progress = 0
+                    part_status = PreviewStatus.MISSING
+                    part_error = None
+                    part_speed = None
+
+                    if is_processing_this_part and item.status in [PreviewStatus.PROCESSING, PreviewStatus.FAILED, PreviewStatus.SLOW_FAILED]:
+                        # This part is currently processing (or just failed)
+                        part_status = item.status
+                        part_progress = item.progress
+                        part_error = item.error_message if item.status in [PreviewStatus.FAILED, PreviewStatus.SLOW_FAILED] else None
+                        part_speed = item.avg_speed
+                    elif bif_exists:
+                        # Part is completed
                         part_status = PreviewStatus.COMPLETED
+                        part_progress = 100
                     else:
-                        # BIF missing - inherit status from parent item
-                        if item.status == PreviewStatus.PROCESSING:
-                            part_status = PreviewStatus.PROCESSING
-                        elif item.status == PreviewStatus.FAILED:
-                            part_status = PreviewStatus.FAILED
-                        elif item.status == PreviewStatus.SLOW_FAILED:
-                            part_status = PreviewStatus.SLOW_FAILED
-                        elif item.status == PreviewStatus.QUEUED:
+                        # Part is pending or missing
+                        if item.status == PreviewStatus.QUEUED:
                             part_status = PreviewStatus.QUEUED
+                        elif item.status == PreviewStatus.MEDIA_MISSING:
+                             part_status = PreviewStatus.MEDIA_MISSING
                         else:
                             part_status = PreviewStatus.MISSING
 
@@ -927,11 +942,11 @@ async def get_items(
                         "bundle_hash": part.get('bundle_hash'),
                         "bif_path": part.get('bif_path'),
                         "status": part_status,
-                        "progress": item.progress,  # Share item's progress
-                        "avg_speed": item.avg_speed,  # Share item's speed
+                        "progress": part_progress,
+                        "avg_speed": part_speed,
                         "added_at": item.added_at,
                         "updated_at": item.updated_at,
-                        "error_message": item.error_message if part_status in [PreviewStatus.FAILED, PreviewStatus.SLOW_FAILED] else None,
+                        "error_message": part_error,
                         "is_multi_part": len(parts) > 1,
                         "is_priority": item.is_priority  # Priority flag
                     })

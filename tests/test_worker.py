@@ -41,7 +41,7 @@ class TestWorker:
         worker.is_busy = True
         assert worker.is_available() == False
     
-    @patch('plex_generate_previews.media_processing.process_item')
+    @patch('plex_generate_previews.worker.process_item')
     def test_worker_assign_task(self, mock_process):
         """Test task assignment."""
         worker = Worker(0, 'CPU')
@@ -52,7 +52,7 @@ class TestWorker:
         mock_process.return_value = None
         
         worker.assign_task(
-            'test_key',
+            '100',
             config,
             plex,
             media_title='Test Movie',
@@ -61,7 +61,7 @@ class TestWorker:
         )
         
         assert worker.is_busy == True
-        assert worker.current_task == 'test_key'
+        assert worker.current_task == '100'
         assert worker.media_title == 'Test Movie'
         assert worker.media_type == 'movie'
         
@@ -77,9 +77,9 @@ class TestWorker:
         plex = MagicMock()
         
         with pytest.raises(RuntimeError):
-            worker.assign_task('test_key', config, plex)
+            worker.assign_task('100', config, plex)
     
-    @patch('plex_generate_previews.media_processing.process_item')
+    @patch('plex_generate_previews.worker.process_item')
     def test_worker_check_completion(self, mock_process):
         """Test completion detection."""
         worker = Worker(0, 'CPU')
@@ -88,7 +88,7 @@ class TestWorker:
         
         mock_process.return_value = None
         
-        worker.assign_task('test_key', config, plex, media_title='Test', media_type='movie')
+        worker.assign_task('100', config, plex, media_title='Test', media_type='movie')
         
         # Should be busy initially
         assert worker.is_busy == True
@@ -174,7 +174,7 @@ class TestWorker:
         
         mock_process.side_effect = mock_process_fn
         
-        worker.assign_task('test_key', config, plex, media_title='Test', media_type='movie')
+        worker.assign_task('100', config, plex, media_title='Test', media_type='movie')
         
         # Give thread a moment to start
         time.sleep(0.01)
@@ -205,7 +205,7 @@ class TestWorker:
         mock_process.side_effect = mock_process_fn
         
         worker.assign_task(
-            'test_key',
+            '100',
             config,
             plex,
             media_title='AV1 Video',
@@ -223,7 +223,7 @@ class TestWorker:
         # Task should be in fallback queue
         assert not fallback_queue.empty()
         item_key, media_title, media_type = fallback_queue.get()
-        assert item_key == 'test_key'
+        assert item_key == '100'
         assert media_title == 'AV1 Video'
         assert media_type == 'episode'
     
@@ -243,7 +243,7 @@ class TestWorker:
         mock_process.side_effect = mock_process_fn
         
         worker.assign_task(
-            'test_key',
+            '100',
             config,
             plex,
             media_title='AV1 Video',
@@ -274,7 +274,7 @@ class TestWorker:
         
         mock_process.side_effect = mock_process_fn
         
-        worker.assign_task('test_key', config, plex, media_title='Test', media_type='movie')
+        worker.assign_task('100', config, plex, media_title='Test', media_type='movie')
         
         # Wait for thread to complete
         time.sleep(0.2)
@@ -340,8 +340,8 @@ class TestWorkerPool:
         plex = MagicMock()
         
         items = [
-            ('key1', 'Movie 1', 'movie'),
-            ('key2', 'Movie 2', 'movie'),
+            ('1', 'Movie 1', 'movie'),
+            ('2', 'Movie 2', 'movie'),
         ]
         
         # Mock progress manager
@@ -383,7 +383,7 @@ class TestWorkerPool:
         # Should not crash
         pool.shutdown()
     
-    @patch('plex_generate_previews.media_processing.process_item')
+    @patch('plex_generate_previews.worker.process_item')
     def test_worker_pool_task_completion(self, mock_process):
         """Test that all tasks complete."""
         # Simulate slow processing
@@ -401,10 +401,10 @@ class TestWorkerPool:
         plex = MagicMock()
         
         items = [
-            ('key1', 'Movie 1', 'movie'),
-            ('key2', 'Movie 2', 'movie'),
-            ('key3', 'Movie 3', 'movie'),
-            ('key4', 'Movie 4', 'movie'),
+            ('1', 'Movie 1', 'movie'),
+            ('2', 'Movie 2', 'movie'),
+            ('3', 'Movie 3', 'movie'),
+            ('4', 'Movie 4', 'movie'),
         ]
         
         # Mock progress manager
@@ -439,10 +439,10 @@ class TestWorkerPool:
         plex = MagicMock()
         
         items = [
-            ('key1', 'Movie 1', 'movie'),
-            ('key2', 'Movie 2', 'movie'),
-            ('key3', 'Movie 3', 'movie'),
-            ('key4', 'Movie 4', 'movie'),
+            ('1', 'Movie 1', 'movie'),
+            ('2', 'Movie 2', 'movie'),
+            ('3', 'Movie 3', 'movie'),
+            ('4', 'Movie 4', 'movie'),
         ]
         
         # Mock progress manager
@@ -458,17 +458,24 @@ class TestWorkerPool:
         total_failed = sum(w.failed for w in pool.workers)
         assert total_failed > 0
     
-    @patch('plex_generate_previews.media_processing.process_item')
+    @patch('plex_generate_previews.worker.process_item')
     def test_worker_pool_progress_updates(self, mock_process):
         """Test that progress callbacks work correctly."""
-        mock_process.return_value = None
+        # Add delay to ensure loop picks up progress
+        def delayed_process(*args, **kwargs):
+            time.sleep(0.05)
+            # Call progress callback
+            if 'progress_callback' in kwargs and kwargs['progress_callback']:
+                kwargs['progress_callback'](50, 100, 200, speed="1.0x")
+        
+        mock_process.side_effect = delayed_process
         
         pool = WorkerPool(gpu_workers=0, cpu_workers=1, selected_gpus=[])
         
         config = MagicMock()
         plex = MagicMock()
         
-        items = [('key1', 'Movie 1', 'movie')]
+        items = [('1', 'Movie 1', 'movie')]
         
         # Mock progress manager
         mock_progress_manager = MagicMock()
@@ -521,7 +528,7 @@ class TestWorkerPool:
         plex = MagicMock()
         
         items = [
-            ('key1', 'AV1 Video', 'episode'),
+            ('1', 'AV1 Video', 'episode'),
         ]
         
         # Mock progress manager
@@ -538,8 +545,8 @@ class TestWorkerPool:
         
         # Should have been called twice: once from GPU, once from CPU
         assert len(call_order) == 2, f"Expected 2 calls, got {len(call_order)}: {call_order}"
-        assert call_order[0] == ('key1', 'NVIDIA')  # GPU worker tried first
-        assert call_order[1] == ('key1', None)  # CPU worker succeeded
+        assert call_order[0] == ('1', 'NVIDIA')  # GPU worker tried first
+        assert call_order[1] == ('1', None)  # CPU worker succeeded
         
         # GPU worker should be marked as completed (task handed off)
         assert pool.workers[0].completed == 1
@@ -574,9 +581,9 @@ class TestWorkerPool:
         
         # Mix of regular items and items that will fail on GPU
         items = [
-            ('key1', 'Normal Video', 'movie'),
-            ('key2', 'AV1 Video', 'episode'),
-            ('key3', 'Normal Video 2', 'movie'),
+            ('1', 'Normal Video', 'movie'),
+            ('2', 'AV1 Video', 'episode'),
+            ('3', 'Normal Video 2', 'movie'),
         ]
         
         # Mock progress manager
@@ -619,7 +626,7 @@ class TestWorkerPool:
         plex = MagicMock()
         
         items = [
-            ('key1', 'AV1 Video', 'episode'),
+            ('1', 'AV1 Video', 'episode'),
         ]
         
         # Mock progress manager
