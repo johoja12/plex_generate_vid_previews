@@ -52,6 +52,7 @@ class MediaItem(SQLModel, table=True):
     status: PreviewStatus = Field(default=PreviewStatus.MISSING)
     progress: int = Field(default=0)
     queue_order: int = Field(default=0) # For manual ordering
+    is_priority: bool = Field(default=False) # Priority items (on deck, recently played, adjacent episodes)
     avg_speed: Optional[str] = None # Average processing speed (e.g., "1.23x")
 
     # Metadata

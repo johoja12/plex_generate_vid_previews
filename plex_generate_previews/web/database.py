@@ -7,13 +7,31 @@ import os
 sqlite_file_name = os.environ.get("DB_PATH", "plex_previews.db")
 DATABASE_URL = f"sqlite:///{sqlite_file_name}"
 
-# Increase timeout to reduce locking errors (30 seconds for high concurrency)
-engine = create_engine(DATABASE_URL, echo=False, connect_args={"check_same_thread": False, "timeout": 30})
+# Increase timeout to reduce locking errors (60 seconds for high concurrency with batching)
+engine = create_engine(
+    DATABASE_URL,
+    echo=False,
+    connect_args={
+        "check_same_thread": False,
+        "timeout": 60.0,  # Increased timeout
+        "isolation_level": None  # Autocommit mode for better concurrency
+    },
+    pool_pre_ping=True,  # Verify connections before using
+    pool_recycle=3600  # Recycle connections every hour
+)
 
 def setup_sqlite(dbapi_connection, connection_record):
     cursor = dbapi_connection.cursor()
+    # WAL mode allows concurrent reads and writes
     cursor.execute("PRAGMA journal_mode=WAL;")
-    cursor.execute("PRAGMA synchronous=NORMAL;") # Optional but good for performance
+    # NORMAL is faster than FULL, still safe with WAL
+    cursor.execute("PRAGMA synchronous=NORMAL;")
+    # Increase cache size for better performance (in KB, negative = KB)
+    cursor.execute("PRAGMA cache_size=-64000;")  # 64MB cache
+    # Optimize for concurrent access
+    cursor.execute("PRAGMA busy_timeout=60000;")  # 60 second busy timeout
+    # Use memory for temp storage (faster)
+    cursor.execute("PRAGMA temp_store=MEMORY;")
     cursor.close()
 
 event.listen(engine, "connect", setup_sqlite)
@@ -101,6 +119,13 @@ def create_db_and_tables():
     try:
         with engine.connect() as connection:
             connection.execute(text("ALTER TABLE mediaitem ADD COLUMN media_parts_info VARCHAR"))
+    except Exception:
+        pass
+
+    # Migration: Add is_priority to MediaItem
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("ALTER TABLE mediaitem ADD COLUMN is_priority INTEGER DEFAULT 0"))
     except Exception:
         pass
 

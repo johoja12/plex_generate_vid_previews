@@ -8,6 +8,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlmodel import Session, select, func, col, delete, or_
+from sqlalchemy import case
+from sqlalchemy.types import Float
 from typing import Optional, List
 from pydantic import BaseModel
 from itsdangerous import URLSafeTimedSerializer
@@ -810,6 +812,9 @@ async def get_items(
     search: Optional[str] = None,
     library_name: Optional[str] = None,
     hide_completed: bool = False, # Filter to hide completed items
+    show_priority_only: bool = False, # Filter to show only priority items
+    sort_by: Optional[str] = None, # Column to sort by: added_at, title, avg_speed, status
+    sort_order: Optional[str] = "desc", # Sort order: asc or desc
     page: int = 1,
     limit: int = 50,
     session: Session = Depends(get_session),
@@ -825,6 +830,8 @@ async def get_items(
         filters.append(MediaItem.library_name == library_name)
     if hide_completed: # Exclude completed items
         filters.append(MediaItem.status != PreviewStatus.COMPLETED)
+    if show_priority_only: # Show only priority items
+        filters.append(MediaItem.is_priority == True)
     
     # Count total matching
     count_query = select(func.count()).select_from(MediaItem)
@@ -838,7 +845,32 @@ async def get_items(
         query = query.where(*filters)
     
     # Sort
-    if status in [PreviewStatus.QUEUED, PreviewStatus.MISSING]:
+    if sort_by:
+        # User-selected sorting
+        sort_column = None
+        if sort_by == "added_at":
+            sort_column = MediaItem.added_at
+        elif sort_by == "title":
+            sort_column = MediaItem.title
+        elif sort_by == "status":
+            sort_column = MediaItem.status
+        elif sort_by == "avg_speed":
+            # For avg_speed, we need to handle it specially since it's stored as string (e.g., "1.23x")
+            # Use SQLite's CAST to convert to numeric for sorting, handling NULL values
+            # REPLACE removes 'x' suffix, NULLIF handles empty strings
+            sort_column = case(
+                (MediaItem.avg_speed.is_(None), None),
+                else_=func.cast(func.replace(MediaItem.avg_speed, 'x', ''), Float)
+            )
+
+        if sort_column is not None:
+            if sort_order == "asc":
+                # Put NULLs last for ascending order
+                query = query.order_by(sort_column.asc().nullslast())
+            else:
+                # Put NULLs last for descending order
+                query = query.order_by(sort_column.desc().nullslast())
+    elif status in [PreviewStatus.QUEUED, PreviewStatus.MISSING]:
         # For queue, prioritize newest items first (added_at desc), then queue_order as tiebreaker
         # This ensures newly added items are always processed first
         query = query.order_by(MediaItem.added_at.desc(), MediaItem.queue_order.asc())
@@ -900,7 +932,8 @@ async def get_items(
                         "added_at": item.added_at,
                         "updated_at": item.updated_at,
                         "error_message": item.error_message if part_status in [PreviewStatus.FAILED, PreviewStatus.SLOW_FAILED] else None,
-                        "is_multi_part": len(parts) > 1
+                        "is_multi_part": len(parts) > 1,
+                        "is_priority": item.is_priority  # Priority flag
                     })
             except (json.JSONDecodeError, Exception) as e:
                 logger.error(f"Error parsing media_parts_info for item {item.id}: {e}")
@@ -921,7 +954,8 @@ async def get_items(
                     "added_at": item.added_at,
                     "updated_at": item.updated_at,
                     "error_message": item.error_message,
-                    "is_multi_part": False
+                    "is_multi_part": False,
+                    "is_priority": item.is_priority
                 })
         else:
             # No parts info, use item directly
@@ -941,7 +975,8 @@ async def get_items(
                 "added_at": item.added_at,
                 "updated_at": item.updated_at,
                 "error_message": item.error_message,
-                "is_multi_part": False
+                "is_multi_part": False,
+                "is_priority": item.is_priority
             })
 
     # Update total count to reflect expanded parts

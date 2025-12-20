@@ -6,7 +6,7 @@ from sqlmodel import Session, select, col
 from loguru import logger
 
 from ..config import Config, load_config
-from ..plex_client import plex_server, get_library_sections, get_media_parts_from_database
+from ..plex_client import plex_server, get_library_sections, get_media_parts_from_database, retry_plex_call
 from ..worker import WorkerPool
 from ..gpu_detection import detect_all_gpus
 from ..utils import setup_working_directory, sanitize_path
@@ -19,6 +19,11 @@ class DbProgressManager:
     def __init__(self):
         # Track last update time per worker to throttle DB writes
         self.last_update = {}
+        # Batch updates in memory before writing to DB
+        self.pending_updates = {}  # {item_key: data}
+        self.update_lock = threading.Lock()
+        self.last_batch_write = time.time()
+        self.batch_write_interval = 5.0  # Write batches every 5 seconds (increased from 2)
 
     def init_workers(self, workers):
         pass
@@ -30,109 +35,154 @@ class DbProgressManager:
             return
 
         progress = data.get('progress_percent', 0)
-        is_busy = data.get('is_busy', False)
-        error_message = data.get('error_message')
-        media_file = data.get('media_file')
         is_failed = data.get('failed', False)
-        avg_speed = data.get('avg_speed')
 
         # Debug log for failed items
         if is_failed:
-            logger.debug(f"DbProgressManager: Received failed=True for item {item_key}, progress={progress}, error={error_message}")
+            logger.debug(f"DbProgressManager: Received failed=True for item {item_key}, progress={progress}, error={data.get('error_message')}")
 
-        # Throttle DB updates to every 2 seconds per worker, unless finished (100%) or starting (0%)
-        current_time = time.time()
-        last_time = self.last_update.get(worker_id, 0)
+        # Critical updates that bypass batching and write immediately
+        is_critical = progress == 0 or progress >= 100 or is_failed
 
-        should_update = (
-            progress == 0 or            # Always update on 0%
-            progress >= 100 or          # Always update on 100%
-            data.get('failed') or       # Always update on failed
-            (current_time - last_time > 2.0 and is_busy) # Throttle if busy and not a final state
-        )
+        if is_critical:
+            # Write immediately for critical updates (start, complete, fail)
+            self._write_update_immediate(item_key, data)
+        else:
+            # Batch non-critical updates (progress updates during processing)
+            with self.update_lock:
+                # Store/update pending data for this item
+                self.pending_updates[item_key] = data
 
-        if should_update:
-            self.last_update[worker_id] = current_time
+                # Check if it's time to flush the batch
+                current_time = time.time()
+                if current_time - self.last_batch_write >= self.batch_write_interval:
+                    self._flush_batch_updates()
+                    self.last_batch_write = current_time
 
-            # Retry logic for database lock errors
-            max_retries = 3
-            retry_delay = 0.1  # Start with 100ms
+    def _write_update_immediate(self, item_key, data):
+        """Write a single critical update immediately with retry logic."""
+        max_retries = 5
+        retry_delay = 0.05  # Start with 50ms
 
-            for attempt in range(max_retries):
-                try:
-                    with Session(engine) as session:
-                        item = session.get(MediaItem, int(item_key))
-                        if not item:
-                            logger.warning(f"DbProgressManager: Item {item_key} not found in database, cannot update status")
-                            return
-                        if item:
-                            if data.get('failed'):
-                                # Task failed - check if it's slow processing
-                                if error_message and "too slow" in error_message.lower():
-                                    item.status = PreviewStatus.SLOW_FAILED
-                                    logger.info(f"Marked item {item_key} ({item.title}) as SLOW_FAILED in database: {error_message}")
-                                else:
-                                    item.status = PreviewStatus.FAILED
-                                    logger.info(f"Marked item {item_key} ({item.title}) as FAILED in database: {error_message}")
-                                item.progress = int(progress) if progress > 0 else item.progress
-                                item.error_message = error_message
-                                # Store final avg_speed if available
-                                if avg_speed:
-                                    item.avg_speed = avg_speed
-                            elif progress >= 100:
-                                # Only mark as COMPLETED if not failed
-                                item.status = PreviewStatus.COMPLETED
-                                item.progress = 100
-                                item.error_message = None  # Clear any previous error
-                                # Store final avg_speed if available
-                                if avg_speed:
-                                    item.avg_speed = avg_speed
-                                # Set BIF path if we have a bundle hash
-                                if item.bundle_hash:
-                                    from ..utils import sanitize_path
-                                    bundle_file = sanitize_path(f'{item.bundle_hash[0]}/{item.bundle_hash[1::1]}.bundle')
-                                    bundle_path = sanitize_path(os.path.join(
-                                        scheduler.config.plex_config_folder if scheduler.config else '/config/plex',
-                                        'Media', 'localhost', bundle_file
-                                    ))
-                                    bif_path = sanitize_path(os.path.join(bundle_path, 'Contents', 'Indexes', 'index-sd.bif'))
-                                    item.bif_path = bif_path
-                                logger.info(f"Marked item {item_key} ({item.title}) as COMPLETED in database")
-                            elif progress > 0:
-                                # Only update to PROCESSING if not already COMPLETED
-                                # (prevents race condition where completion update comes after this)
-                                if item.status != PreviewStatus.COMPLETED:
-                                    item.status = PreviewStatus.PROCESSING
-                                item.progress = int(progress)
-                                # Store current avg_speed if available
-                                if avg_speed:
-                                    item.avg_speed = avg_speed
-                                # Store media file path if available
-                                if media_file:
-                                    item.file_path = media_file
-                            session.add(item)
-                            session.commit()
-                    break  # Success, exit retry loop
+        for attempt in range(max_retries):
+            try:
+                with Session(engine) as session:
+                    item = session.get(MediaItem, int(item_key))
+                    if not item:
+                        logger.warning(f"DbProgressManager: Item {item_key} not found in database")
+                        return
 
-                except Exception as e:
-                    # Check if it's a database lock error
-                    if "database is locked" in str(e).lower() and attempt < max_retries - 1:
-                        logger.debug(f"Database locked for item {item_key}, retrying in {retry_delay}s (attempt {attempt + 1}/{max_retries})")
-                        time.sleep(retry_delay)
-                        retry_delay *= 2  # Exponential backoff
+                    self._apply_update_to_item(item, data)
+                    session.add(item)
+                    session.commit()
+                    return  # Success
+
+            except Exception as e:
+                if "database is locked" in str(e).lower() and attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    retry_delay *= 1.5  # Gentler exponential backoff
+                else:
+                    if attempt == max_retries - 1:
+                        logger.warning(f"⚠️  - Failed to update DB for {item_key} after {max_retries} attempts: {e}")
                     else:
-                        # Final attempt failed or non-lock error
-                        if attempt == max_retries - 1:
-                            logger.warning(f"Failed to update DB progress for {item_key} after {max_retries} attempts: {e}")
-                        else:
-                            logger.error(f"Failed to update DB progress for {item_key}: {e}")
-                        break
+                        logger.error(f"Failed to update DB for {item_key}: {e}")
+                    return
+
+    def _flush_batch_updates(self):
+        """Flush all pending updates in a single transaction."""
+        if not self.pending_updates:
+            return
+
+        # Copy and clear pending updates
+        updates_to_write = dict(self.pending_updates)
+        self.pending_updates.clear()
+
+        max_retries = 5
+        retry_delay = 0.05
+
+        for attempt in range(max_retries):
+            try:
+                with Session(engine) as session:
+                    # Process all updates in a single transaction
+                    for item_key, data in updates_to_write.items():
+                        item = session.get(MediaItem, int(item_key))
+                        if item:
+                            self._apply_update_to_item(item, data)
+                            session.add(item)
+
+                    session.commit()
+                    logger.debug(f"Batch wrote {len(updates_to_write)} progress updates to DB")
+                    return  # Success
+
+            except Exception as e:
+                if "database is locked" in str(e).lower() and attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    retry_delay *= 1.5
+                else:
+                    if attempt == max_retries - 1:
+                        logger.warning(f"⚠️  - Failed to batch write {len(updates_to_write)} updates after {max_retries} attempts: {e}")
+                    else:
+                        logger.error(f"Failed to batch write updates: {e}")
+                    return
+
+    def _apply_update_to_item(self, item, data):
+        """Apply update data to a MediaItem object."""
+        progress = data.get('progress_percent', 0)
+        error_message = data.get('error_message')
+        media_file = data.get('media_file')
+        avg_speed = data.get('avg_speed')
+
+        if data.get('failed'):
+            # Task failed - check if it's slow processing
+            if error_message and "too slow" in error_message.lower():
+                item.status = PreviewStatus.SLOW_FAILED
+                logger.info(f"Marked item {item.id} ({item.title}) as SLOW_FAILED: {error_message}")
+            else:
+                item.status = PreviewStatus.FAILED
+                logger.info(f"Marked item {item.id} ({item.title}) as FAILED: {error_message}")
+            item.progress = int(progress) if progress > 0 else item.progress
+            item.error_message = error_message
+            if avg_speed:
+                item.avg_speed = avg_speed
+
+        elif progress >= 100:
+            # Completed
+            item.status = PreviewStatus.COMPLETED
+            item.progress = 100
+            item.error_message = None
+            if avg_speed:
+                item.avg_speed = avg_speed
+            # Set BIF path if we have a bundle hash
+            if item.bundle_hash:
+                from ..utils import sanitize_path
+                bundle_file = sanitize_path(f'{item.bundle_hash[0]}/{item.bundle_hash[1::1]}.bundle')
+                bundle_path = sanitize_path(os.path.join(
+                    scheduler.config.plex_config_folder if scheduler.config else '/config/plex',
+                    'Media', 'localhost', bundle_file
+                ))
+                bif_path = sanitize_path(os.path.join(bundle_path, 'Contents', 'Indexes', 'index-sd.bif'))
+                item.bif_path = bif_path
+            logger.info(f"Marked item {item.id} ({item.title}) as COMPLETED")
+
+        elif progress > 0:
+            # Processing
+            if item.status != PreviewStatus.COMPLETED:
+                item.status = PreviewStatus.PROCESSING
+            item.progress = int(progress)
+            if avg_speed:
+                item.avg_speed = avg_speed
+            if media_file:
+                item.file_path = media_file
 
     def update_main_progress(self, completed, total):
         pass
 
     def cleanup_workers(self):
-        pass
+        """Flush any remaining pending updates before shutdown."""
+        with self.update_lock:
+            if self.pending_updates:
+                logger.debug(f"Flushing {len(self.pending_updates)} pending updates on cleanup")
+                self._flush_batch_updates()
 
 class Scheduler:
     def __init__(self):
@@ -885,6 +935,75 @@ class Scheduler:
             logger.error(traceback.format_exc())
             return {"error": str(e)}
 
+    def detect_priority_items(self, plex) -> set:
+        """
+        Detect priority items from Plex:
+        1. On-deck items (up next to watch)
+        2. Recently played items (last 50)
+        3. Adjacent episodes (all episodes in same season as recently played)
+
+        Args:
+            plex: PlexServer instance
+
+        Returns:
+            set: Set of Plex rating keys (int) that are priority items
+        """
+        priority_keys = set()
+
+        try:
+            # Step 1: Get on-deck items
+            logger.debug("Querying on-deck items...")
+            try:
+                on_deck_items = retry_plex_call(plex.library.onDeck)
+                for item in on_deck_items:
+                    priority_keys.add(int(item.ratingKey))
+                    logger.debug(f"Priority (on-deck): {item.title} ({item.ratingKey})")
+            except Exception as e:
+                logger.warning(f"Failed to get on-deck items: {e}")
+
+            # Step 2: Get recently played items (last 50)
+            logger.debug("Querying recently played items (last 50)...")
+            try:
+                history_items = retry_plex_call(plex.library.history, maxresults=50)
+
+                # Track seasons we've seen to avoid duplicate season queries
+                processed_seasons = set()
+
+                for item in history_items:
+                    priority_keys.add(int(item.ratingKey))
+                    logger.debug(f"Priority (history): {item.title} ({item.ratingKey})")
+
+                    # Step 3: If it's an episode, get all episodes from same season
+                    if item.type == 'episode':
+                        try:
+                            # Get parent season
+                            season = retry_plex_call(item.season)
+                            season_key = int(season.ratingKey)
+
+                            # Only process each season once (optimization)
+                            if season_key not in processed_seasons:
+                                processed_seasons.add(season_key)
+
+                                # Get all episodes in this season
+                                episodes = retry_plex_call(season.episodes)
+                                for ep in episodes:
+                                    priority_keys.add(int(ep.ratingKey))
+
+                                logger.debug(f"Priority (adjacent): Added {len(episodes)} episodes from {season.title}")
+                        except Exception as e:
+                            logger.warning(f"Failed to get adjacent episodes for {item.title}: {e}")
+            except Exception as e:
+                logger.warning(f"Failed to get history items: {e}")
+
+            logger.info(f"Detected {len(priority_keys)} priority items total")
+            return priority_keys
+
+        except Exception as e:
+            logger.error(f"Priority detection failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return set()
+
     def sync_library(self):
         logger.debug("Syncing library with Plex...")
         try:
@@ -905,6 +1024,10 @@ class Scheduler:
             # Step 2: Get items from Plex
             plex = plex_server(self.config)
             sections = get_library_sections(plex, self.config)
+
+            # Step 2.5: Detect priority items from Plex
+            priority_item_keys = self.detect_priority_items(plex)
+            logger.debug(f"Priority detection complete: {len(priority_item_keys)} items")
 
             # Track all valid item IDs from Plex for orphan cleanup
             plex_item_ids = set()
@@ -968,7 +1091,8 @@ class Scheduler:
                                 bundle_hash=bundle_hash,
                                 media_parts_info=media_parts_json,
                                 added_at=added_at if added_at else datetime.utcnow(),
-                                error_message="Media file not found (broken symlink or deleted)" if not media_exists else None
+                                error_message="Media file not found (broken symlink or deleted)" if not media_exists else None,
+                                is_priority=int(item_key) in priority_item_keys
                             )
                             session.add(new_item)
 
@@ -980,6 +1104,15 @@ class Scheduler:
                         else:
                             # Track if this item gets updated
                             item_updated = False
+
+                            # Update priority status
+                            expected_priority = int(item_key) in priority_item_keys
+                            if db_item.is_priority != expected_priority:
+                                db_item.is_priority = expected_priority
+                                session.add(db_item)
+                                item_updated = True
+                                if expected_priority:
+                                    logger.debug(f"Item {item_key} ({title}) marked as priority")
 
                             # Update hash if missing
                             if not db_item.bundle_hash and bundle_hash:
@@ -1110,11 +1243,13 @@ class Scheduler:
         
         with Session(engine) as session:
             # Prioritize: Status is MISSING only (not QUEUED - those are already in the worker queue)
-            # Sort by updated_at desc (Most recently changed first), then by queue_order for manual prioritization
-            # This ensures items with new parts added are processed before older missing items
+            # Sort by:
+            # 1. is_priority desc (Priority items first: on-deck, recently played, adjacent episodes)
+            # 2. updated_at desc (Most recently changed first)
+            # 3. queue_order asc (Manual prioritization)
             statement = select(MediaItem).where(
                 MediaItem.status == PreviewStatus.MISSING
-            ).order_by(MediaItem.updated_at.desc(), MediaItem.queue_order.asc()).limit(batch_size)
+            ).order_by(MediaItem.is_priority.desc(), MediaItem.updated_at.desc(), MediaItem.queue_order.asc()).limit(batch_size)
 
             items = session.exec(statement).all()
 
@@ -1123,10 +1258,11 @@ class Scheduler:
 
             # Log the order of items being processed for debugging
             if items:
-                logger.debug(f"Processing batch of {len(items)} items (most recently updated first):")
+                logger.debug(f"Processing batch of {len(items)} items (priority first, then most recently updated):")
                 for idx, item in enumerate(items[:3]):  # Show first 3 items
                     updated_date = item.updated_at.strftime('%Y-%m-%d %H:%M') if item.updated_at else 'unknown'
-                    logger.debug(f"  {idx+1}. {item.title} (updated: {updated_date})")
+                    priority_flag = " [PRIORITY]" if item.is_priority else ""
+                    logger.debug(f"  {idx+1}. {item.title} (updated: {updated_date}){priority_flag}")
 
             # Prepare for worker pool
             # worker_pool.process_items expects List[tuple(key, title, type)]
@@ -1160,10 +1296,10 @@ class Scheduler:
 
             with Session(engine) as session:
                 # Fetch items that are MISSING only (QUEUED items are already in the worker queue)
-                # Sort by updated_at to prioritize recently changed items (e.g., new parts added)
+                # Sort by priority first, then updated_at, then manual queue_order
                 statement = select(MediaItem).where(
                     MediaItem.status == PreviewStatus.MISSING
-                ).order_by(MediaItem.updated_at.desc(), MediaItem.queue_order.asc()).limit(batch_size)
+                ).order_by(MediaItem.is_priority.desc(), MediaItem.updated_at.desc(), MediaItem.queue_order.asc()).limit(batch_size)
 
                 items = session.exec(statement).all()
 
@@ -1236,6 +1372,12 @@ class Scheduler:
                         # Reset to QUEUED so it can be retried
                         logger.debug(f"Post-processing: Item {item_id} ({item.title}) was processing but no progress made, resetting to QUEUED")
                         item.status = PreviewStatus.QUEUED
+                        session.add(item)
+
+                    # Clear priority flag for completed items to prevent stale priority data
+                    if item.status == PreviewStatus.COMPLETED and item.is_priority:
+                        logger.debug(f"Post-processing: Clearing priority flag for completed item {item_id} ({item.title})")
+                        item.is_priority = False
                         session.add(item)
             session.commit()
 

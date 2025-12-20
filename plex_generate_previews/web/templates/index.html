@@ -218,6 +218,10 @@
                     <input type="checkbox" x-model="hideCompleted" @change="page=1; fetchItems()" class="mr-2">
                     <span class="text-white text-sm">Hide Completed</span>
                 </label>
+                <label class="flex items-center bg-orange-700/30 px-3 py-2 rounded border border-orange-600/50 cursor-pointer hover:bg-orange-700/50 transition">
+                    <input type="checkbox" x-model="showPriorityOnly" @change="page=1; fetchItems()" class="mr-2">
+                    <span class="text-white text-sm">⭐ Priority Only</span>
+                </label>
             </div>
         </div>
         <div class="overflow-x-auto">
@@ -229,13 +233,45 @@
                         </th>
                         <th class="pb-2 w-8"></th>
                         <th class="pb-2 w-8">#</th>
-                        <th class="pb-2 pl-2">Title / File</th>
+                        <th class="pb-2 pl-2 cursor-pointer hover:text-white transition select-none" @click="sortByColumn('title')">
+                            <span class="inline-flex items-center">
+                                Title / File
+                                <span class="ml-1" x-show="sortBy === 'title'">
+                                    <span x-show="sortOrder === 'asc'">↑</span>
+                                    <span x-show="sortOrder === 'desc'">↓</span>
+                                </span>
+                            </span>
+                        </th>
                         <th class="pb-2">Type</th>
                         <th class="pb-2">Library</th>
-                        <th class="pb-2">Added</th>
-                        <th class="pb-2">Status</th>
+                        <th class="pb-2 cursor-pointer hover:text-white transition select-none" @click="sortByColumn('added_at')">
+                            <span class="inline-flex items-center">
+                                Added
+                                <span class="ml-1" x-show="sortBy === 'added_at'">
+                                    <span x-show="sortOrder === 'asc'">↑</span>
+                                    <span x-show="sortOrder === 'desc'">↓</span>
+                                </span>
+                            </span>
+                        </th>
+                        <th class="pb-2 cursor-pointer hover:text-white transition select-none" @click="sortByColumn('status')">
+                            <span class="inline-flex items-center">
+                                Status
+                                <span class="ml-1" x-show="sortBy === 'status'">
+                                    <span x-show="sortOrder === 'asc'">↑</span>
+                                    <span x-show="sortOrder === 'desc'">↓</span>
+                                </span>
+                            </span>
+                        </th>
                         <th class="pb-2">Progress</th>
-                        <th class="pb-2">Speed</th>
+                        <th class="pb-2 cursor-pointer hover:text-white transition select-none" @click="sortByColumn('avg_speed')">
+                            <span class="inline-flex items-center">
+                                Speed
+                                <span class="ml-1" x-show="sortBy === 'avg_speed'">
+                                    <span x-show="sortOrder === 'asc'">↑</span>
+                                    <span x-show="sortOrder === 'desc'">↓</span>
+                                </span>
+                            </span>
+                        </th>
                         <th class="pb-2">Actions</th>
                     </tr>
                 </thead>
@@ -253,12 +289,17 @@
                             </td>
                             <td class="py-3 pl-2 text-xs text-gray-500" x-text="item.part_index + 1"></td>
                         <td class="py-3 pl-2 font-medium">
-                            <template x-if="plexClientIdentifier">
-                                <a :href="plexWebUrl(item.item_id)" target="_blank" class="hover:text-orange-400 underline" x-text="item.title"></a>
-                            </template>
-                            <template x-if="!plexClientIdentifier">
-                                <span class="text-gray-400" x-text="item.title" title="Plex server not configured - cannot link to app.plex.tv"></span>
-                            </template>
+                            <div class="flex items-center gap-2">
+                                <template x-if="item.is_priority">
+                                    <span class="text-orange-400 text-sm" title="Priority Item (On Deck / Recently Played / Adjacent Episode)">⭐</span>
+                                </template>
+                                <template x-if="plexClientIdentifier">
+                                    <a :href="plexWebUrl(item.item_id)" target="_blank" class="hover:text-orange-400 underline" x-text="item.title"></a>
+                                </template>
+                                <template x-if="!plexClientIdentifier">
+                                    <span class="text-gray-400" x-text="item.title" title="Plex server not configured - cannot link to app.plex.tv"></span>
+                                </template>
+                            </div>
                         </td>
                         <td class="py-3 capitalize text-sm text-gray-400" x-text="item.media_type"></td>
                         <td class="py-3 text-sm text-gray-400" x-text="item.library_name"></td>
@@ -429,8 +470,11 @@
                 filterStatus: '',
                 search: '',
                 hideCompleted: false, // Filter to hide completed items
+                showPriorityOnly: false, // Filter to show only priority items
                 libraries: [],
                 selectedLibrary: '', // Stores the currently selected library name
+                sortBy: '', // Column to sort by: added_at, title, avg_speed, status
+                sortOrder: 'desc', // Sort order: asc or desc
                 page: 1,
                 limit: 20,
                 totalPages: 1,
@@ -674,6 +718,8 @@
                         if (this.search) url += `&search=${encodeURIComponent(this.search)}`;
                         if (this.selectedLibrary) url += `&library_name=${encodeURIComponent(this.selectedLibrary)}`; // Add library filter
                         if (this.hideCompleted) url += `&hide_completed=true`; // Add hide completed filter
+                        if (this.showPriorityOnly) url += `&show_priority_only=true`; // Add priority filter
+                        if (this.sortBy) url += `&sort_by=${this.sortBy}&sort_order=${this.sortOrder}`; // Add sorting
 
                         const res = await fetch(url);
                         const data = await res.json();
@@ -687,7 +733,28 @@
                         this.totalPages = data.pages;
                     } catch (e) { console.error(e); }
                 },
-                
+
+                sortByColumn(column) {
+                    // If clicking the same column, toggle sort order
+                    if (this.sortBy === column) {
+                        this.sortOrder = this.sortOrder === 'asc' ? 'desc' : 'asc';
+                    } else {
+                        // If clicking a new column, set it and default to desc
+                        this.sortBy = column;
+                        this.sortOrder = 'desc';
+                    }
+                    // Reset to page 1 and fetch with new sort
+                    this.page = 1;
+                    this.fetchItems();
+                },
+
+                clearSort() {
+                    this.sortBy = '';
+                    this.sortOrder = 'desc';
+                    this.page = 1;
+                    this.fetchItems();
+                },
+
                 async triggerSync() {
                     await fetch('/api/sync', { method: 'POST' });
                     this.showToast('Sync triggered successfully!', 'success');
