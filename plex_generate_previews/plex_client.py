@@ -365,6 +365,66 @@ def get_hash_from_database(plex_config_folder: str, file_path: str) -> str:
         logger.error(f"Unexpected error querying database for {file_path}: {type(e).__name__}: {e}")
         return None
 
+def get_watch_history_from_database(plex_config_folder: str, limit_per_user: int = 50) -> dict:
+    """
+    Query watch history for all users directly from the Plex SQLite database.
+
+    This is more reliable than using the PlexAPI history() method which may only
+    return history for the authenticated user.
+
+    Args:
+        plex_config_folder: Path to Plex config folder
+        limit_per_user: Maximum number of recent items to return per user (default: 50)
+
+    Returns:
+        dict: Dictionary mapping account_id -> list of (metadata_item_id, viewed_at) tuples,
+              sorted by most recent first
+    """
+    db_path = os.path.join(plex_config_folder, 'Plug-in Support', 'Databases',
+                           'com.plexapp.plugins.library.db')
+
+    if not os.path.exists(db_path):
+        logger.warning(f"Plex database not found at: {db_path}")
+        return {}
+
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+
+        # Query watch history from metadata_item_views table
+        # This table tracks all views with account_id, metadata_item_id, and viewed_at timestamp
+        query = """
+            SELECT account_id, metadata_item_id, viewed_at
+            FROM metadata_item_views
+            WHERE account_id IS NOT NULL
+            ORDER BY account_id, viewed_at DESC
+        """
+
+        cursor.execute(query)
+        results = cursor.fetchall()
+        conn.close()
+
+        # Organize by account_id and limit per user
+        history_by_user = {}
+        for account_id, metadata_item_id, viewed_at in results:
+            if account_id not in history_by_user:
+                history_by_user[account_id] = []
+
+            # Only add if we haven't reached the limit for this user
+            if len(history_by_user[account_id]) < limit_per_user:
+                history_by_user[account_id].append((metadata_item_id, viewed_at))
+
+        logger.debug(f"Retrieved watch history for {len(history_by_user)} users from database")
+        return history_by_user
+
+    except sqlite3.Error as e:
+        logger.error(f"Database error while querying watch history: {e}")
+        return {}
+    except Exception as e:
+        logger.error(f"Unexpected error querying watch history: {type(e).__name__}: {e}")
+        return {}
+
+
 def get_library_sections(plex, config: Config):
     """
     Get all library sections from Plex server.

@@ -8,7 +8,7 @@ from sqlmodel import Session, select, col
 from loguru import logger
 
 from ..config import Config, load_config
-from ..plex_client import plex_server, get_library_sections, get_media_parts_from_database, get_all_media_parts_batch, retry_plex_call
+from ..plex_client import plex_server, get_library_sections, get_media_parts_from_database, get_all_media_parts_batch, get_watch_history_from_database, retry_plex_call
 from ..worker import WorkerPool
 from ..gpu_detection import detect_all_gpus
 from ..utils import setup_working_directory, sanitize_path
@@ -1226,25 +1226,10 @@ class Scheduler:
         # Track seasons globally to avoid duplicate processing across users
         global_processed_seasons = set()
 
-        # Fetch all history once and organize by user for efficiency
-        all_history_items = []
-        try:
-            logger.debug("Fetching global history for all users...")
-            all_history_items = retry_plex_call(
-                plex.library.history,
-                maxresults=history_limit * len(all_users)
-            )
-            logger.debug(f"Retrieved {len(all_history_items)} total history items")
-        except Exception as e:
-            logger.warning(f"Failed to fetch global history: {e}")
-
-        # Organize history by user ID
-        history_by_user = {}
-        for item in all_history_items:
-            if hasattr(item, 'accountID') and item.accountID:
-                if item.accountID not in history_by_user:
-                    history_by_user[item.accountID] = []
-                history_by_user[item.accountID].append(item)
+        # Fetch watch history from database (more reliable than API for multi-user)
+        logger.debug("Fetching watch history from database for all users...")
+        history_by_user = get_watch_history_from_database(self.config.plex_config_folder, history_limit)
+        logger.debug(f"Retrieved history for {len(history_by_user)} users from database")
 
         # Process each user
         for user_info in all_users:
@@ -1268,44 +1253,49 @@ class Scheduler:
 
             # Get recently watched items for this user
             try:
-                # Get this user's history from pre-fetched cache
-                user_history_items = history_by_user.get(user_info['id'], [])[:history_limit]
-                logger.debug(f"Found {len(user_history_items)} history items for user {username}")
+                # Get this user's history from database cache (returns rating keys)
+                user_history_rating_keys = history_by_user.get(user_info['id'], [])
+                logger.debug(f"Found {len(user_history_rating_keys)} history items for user {username}")
 
-                for item in user_history_items:
-                    if item.ratingKey is None:
-                        logger.debug(f"Skipping history item with no ratingKey: {getattr(item, 'title', 'Unknown')}")
+                for metadata_item_id, viewed_at in user_history_rating_keys:
+                    # Add the rating key to priority set
+                    priority_keys.add(int(metadata_item_id))
+                    logger.debug(f"Priority (history, {username}): rating_key={metadata_item_id}")
+
+                    # For episodes, fetch the item to get season and all adjacent episodes
+                    try:
+                        # Fetch the item from Plex to determine type and get season info
+                        item = retry_plex_call(plex.fetchItem, int(metadata_item_id))
+
+                        if item.type == 'episode':
+                            try:
+                                season = retry_plex_call(item.season)
+                                if season.ratingKey is None:
+                                    logger.debug(f"Skipping season with no ratingKey for episode: {item.title}")
+                                    continue
+
+                                season_key = int(season.ratingKey)
+
+                                # Only process each season once globally (across all users)
+                                if season_key not in global_processed_seasons:
+                                    global_processed_seasons.add(season_key)
+
+                                    # Get all episodes in this season
+                                    episodes = retry_plex_call(season.episodes)
+                                    for ep in episodes:
+                                        if ep.ratingKey is not None:
+                                            priority_keys.add(int(ep.ratingKey))
+
+                                    logger.debug(f"Priority (adjacent, {username}): Added {len(episodes)} episodes from {season.title}")
+                            except Exception as e:
+                                logger.warning(f"Failed to get adjacent episodes for {username}/rating_key={metadata_item_id}: {e}")
+                    except Exception as e:
+                        # Item might have been deleted, just skip
+                        logger.debug(f"Could not fetch item {metadata_item_id} for user {username}: {e}")
                         continue
 
-                    priority_keys.add(int(item.ratingKey))
-                    logger.debug(f"Priority (history, {username}): {item.title} ({item.ratingKey})")
-
-                    # If it's an episode, get all episodes from same season
-                    if item.type == 'episode':
-                        try:
-                            season = retry_plex_call(item.season)
-                            if season.ratingKey is None:
-                                logger.debug(f"Skipping season with no ratingKey for episode: {item.title}")
-                                continue
-
-                            season_key = int(season.ratingKey)
-
-                            # Only process each season once globally (across all users)
-                            if season_key not in global_processed_seasons:
-                                global_processed_seasons.add(season_key)
-
-                                # Get all episodes in this season
-                                episodes = retry_plex_call(season.episodes)
-                                for ep in episodes:
-                                    if ep.ratingKey is not None:
-                                        priority_keys.add(int(ep.ratingKey))
-
-                                logger.debug(f"Priority (adjacent, {username}): Added {len(episodes)} episodes from {season.title}")
-                        except Exception as e:
-                            logger.warning(f"Failed to get adjacent episodes for {username}/{item.title}: {e}")
-
             except Exception as e:
-                logger.warning(f"Failed to get history for user {username}: {e}")
+                logger.warning(f"Failed to process history for user {username}: {e}")
                 # Continue with other users even if one fails
 
         return priority_keys
