@@ -1226,6 +1226,26 @@ class Scheduler:
         # Track seasons globally to avoid duplicate processing across users
         global_processed_seasons = set()
 
+        # Fetch all history once and organize by user for efficiency
+        all_history_items = []
+        try:
+            logger.debug("Fetching global history for all users...")
+            all_history_items = retry_plex_call(
+                plex.library.history,
+                maxresults=history_limit * len(all_users)
+            )
+            logger.debug(f"Retrieved {len(all_history_items)} total history items")
+        except Exception as e:
+            logger.warning(f"Failed to fetch global history: {e}")
+
+        # Organize history by user ID
+        history_by_user = {}
+        for item in all_history_items:
+            if hasattr(item, 'accountID') and item.accountID:
+                if item.accountID not in history_by_user:
+                    history_by_user[item.accountID] = []
+                history_by_user[item.accountID].append(item)
+
         # Process each user
         for user_info in all_users:
             username = user_info['username']
@@ -1248,15 +1268,11 @@ class Scheduler:
 
             # Get recently watched items for this user
             try:
-                # Get account views/history - this requires querying via account object
-                # PlexAPI limitation: library.history() with accountID filter
-                history_items = retry_plex_call(
-                    plex.library.history,
-                    maxresults=history_limit,
-                    accountID=user_info['id']
-                )
+                # Get this user's history from pre-fetched cache
+                user_history_items = history_by_user.get(user_info['id'], [])[:history_limit]
+                logger.debug(f"Found {len(user_history_items)} history items for user {username}")
 
-                for item in history_items:
+                for item in user_history_items:
                     if item.ratingKey is None:
                         logger.debug(f"Skipping history item with no ratingKey: {getattr(item, 'title', 'Unknown')}")
                         continue
