@@ -7,7 +7,7 @@ from fastapi import FastAPI, Request, Depends, Form, HTTPException, status, Cook
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from sqlmodel import Session, select, func, col, delete, or_
+from sqlmodel import Session, select, func, col, delete, or_, update
 from sqlalchemy import case
 from sqlalchemy.types import Float
 from typing import Optional, List
@@ -139,14 +139,28 @@ async def settings_page(request: Request, user: Optional[str] = Depends(get_curr
 async def get_settings(session: Session = Depends(get_session), user: str = Depends(login_required)):
     settings = session.get(AppSettings, 1)
     if not settings:
-        return {"gpu_threads": 1, "cpu_threads": 1, "sync_interval": 21600}
+        return {
+            "gpu_threads": 1,
+            "cpu_threads": 1,
+            "sync_interval": 21600,
+            "mount_check_enabled": True,
+            "mount_check_paths": "",
+            "mount_failure_threshold": 50.0,
+            "enable_multi_user_priority": False,
+            "priority_history_limit": 50
+        }
     return {
         "gpu_threads": settings.gpu_threads,
         "cpu_threads": settings.cpu_threads,
         "sync_interval": settings.sync_interval,
         "plex_url": settings.plex_url,
         "plex_server_name": settings.plex_server_name,
-        "plex_client_identifier": settings.plex_client_identifier
+        "plex_client_identifier": settings.plex_client_identifier,
+        "mount_check_enabled": settings.mount_check_enabled if hasattr(settings, 'mount_check_enabled') else True,
+        "mount_check_paths": settings.mount_check_paths if hasattr(settings, 'mount_check_paths') else "",
+        "mount_failure_threshold": settings.mount_failure_threshold if hasattr(settings, 'mount_failure_threshold') else 50.0,
+        "enable_multi_user_priority": settings.enable_multi_user_priority if hasattr(settings, 'enable_multi_user_priority') else False,
+        "priority_history_limit": settings.priority_history_limit if hasattr(settings, 'priority_history_limit') else 50
     }
 
 @app.get("/api/settings/plex-identifier")
@@ -175,6 +189,20 @@ async def update_settings(
     # Update sync interval
     if "sync_interval" in payload:
         settings.sync_interval = int(payload["sync_interval"])
+
+    # Update mount protection settings
+    if "mount_check_enabled" in payload:
+        settings.mount_check_enabled = bool(payload["mount_check_enabled"])
+    if "mount_check_paths" in payload:
+        settings.mount_check_paths = payload["mount_check_paths"]
+    if "mount_failure_threshold" in payload:
+        settings.mount_failure_threshold = float(payload["mount_failure_threshold"])
+
+    # Update multi-user priority settings
+    if "enable_multi_user_priority" in payload:
+        settings.enable_multi_user_priority = bool(payload["enable_multi_user_priority"])
+    if "priority_history_limit" in payload:
+        settings.priority_history_limit = int(payload["priority_history_limit"])
 
     # Update password if provided
     if "new_password" in payload and payload["new_password"]:
@@ -231,6 +259,51 @@ async def reset_library(
     scheduler.trigger_sync()
 
     return {"message": "Library reset. Resyncing..."}
+
+@app.post("/api/settings/validate-mounts")
+async def validate_mounts(user: str = Depends(login_required)):
+    """Test mount validation - checks if configured mount paths are accessible."""
+    if not scheduler.config:
+        raise HTTPException(status_code=400, detail="Scheduler not configured")
+
+    mount_valid, missing_paths = scheduler.validate_mount_paths()
+
+    if mount_valid:
+        return {
+            "valid": True,
+            "message": "All mount paths are accessible" if missing_paths == [] else "Mount validation passed (no paths configured)"
+        }
+    else:
+        return {
+            "valid": False,
+            "message": f"Mount validation failed: {len(missing_paths)} path(s) not accessible",
+            "missing_paths": missing_paths
+        }
+
+@app.post("/api/settings/reset-failed")
+async def reset_failed_items(
+    session: Session = Depends(get_session),
+    user: str = Depends(login_required)
+):
+    """Reset all FAILED and SLOW_FAILED items back to MISSING status."""
+    # Update all failed items to missing
+    statement = update(MediaItem).where(
+        or_(
+            MediaItem.status == PreviewStatus.FAILED,
+            MediaItem.status == PreviewStatus.SLOW_FAILED
+        )
+    ).values(
+        status=PreviewStatus.MISSING,
+        progress=0,
+        error_message=None,
+        current_processing_bundle_hash=None
+    )
+
+    result = session.exec(statement)
+    session.commit()
+
+    count = result.rowcount if hasattr(result, 'rowcount') else 0
+    return {"message": f"Reset {count} failed items to MISSING status"}
 
 @app.get("/api/settings/verify-debug")
 async def verify_debug(user: str = Depends(login_required)):
@@ -637,8 +710,18 @@ async def bulk_action(
     return {"message": f"Updated {updated_count} items", "count": updated_count}
 
 @app.get("/api/queue/status")
-async def get_queue_status(user: str = Depends(login_required)):
-    return {"paused": scheduler.paused}
+async def get_queue_status(session: Session = Depends(get_session), user: str = Depends(login_required)):
+    # Return the paused status from both memory and database for consistency
+    # Prefer database value as the source of truth
+    db_paused = False
+    try:
+        settings = session.get(AppSettings, 1)
+        if settings and hasattr(settings, 'queue_paused'):
+            db_paused = settings.queue_paused
+    except Exception as e:
+        logger.debug(f"Could not load queue_paused from database: {e}")
+
+    return {"paused": scheduler.paused, "db_paused": db_paused}
 
 @app.post("/api/queue/pause")
 async def pause_queue(user: str = Depends(login_required)):
@@ -918,6 +1001,7 @@ async def get_items(
                         # Part is completed
                         part_status = PreviewStatus.COMPLETED
                         part_progress = 100
+                        part_speed = item.avg_speed  # Preserve avg speed for completed items
                     else:
                         # Part is pending or missing
                         if item.status == PreviewStatus.QUEUED:
@@ -1063,5 +1147,5 @@ async def trigger_sync(user: str = Depends(login_required)):
 
 def start():
     import uvicorn
-    uvicorn.run("plex_generate_previews.web.main:app", host="0.0.0.0", port=8008, reload=False)
+    uvicorn.run("plex_generate_previews.web.main:app", host="0.0.0.0", port=8008, reload=False, access_log=False)
 

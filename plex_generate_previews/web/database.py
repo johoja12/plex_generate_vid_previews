@@ -136,6 +136,52 @@ def create_db_and_tables():
     except Exception:
         pass
 
+    # Migration: Add queue_paused to AppSettings
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("ALTER TABLE appsettings ADD COLUMN queue_paused INTEGER DEFAULT 0"))
+    except Exception:
+        pass
+
+    # Migration: Add mount protection settings to AppSettings
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("ALTER TABLE appsettings ADD COLUMN mount_check_enabled INTEGER DEFAULT 1"))
+    except Exception:
+        pass
+
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("ALTER TABLE appsettings ADD COLUMN mount_check_paths VARCHAR"))
+    except Exception:
+        pass
+
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("ALTER TABLE appsettings ADD COLUMN mount_failure_threshold REAL DEFAULT 50.0"))
+    except Exception:
+        pass
+
+    # Migration: Add last_sync_summary to AppSettings
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("ALTER TABLE appsettings ADD COLUMN last_sync_summary VARCHAR"))
+    except Exception:
+        pass
+
+    # Migration: Add multi-user priority settings to AppSettings
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("ALTER TABLE appsettings ADD COLUMN enable_multi_user_priority INTEGER DEFAULT 0"))
+    except Exception:
+        pass
+
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("ALTER TABLE appsettings ADD COLUMN priority_history_limit INTEGER DEFAULT 50"))
+    except Exception:
+        pass
+
 def get_session():
     with Session(engine) as session:
         yield session

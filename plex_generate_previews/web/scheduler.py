@@ -2,11 +2,13 @@ import threading
 import time
 import logging
 from typing import List, Tuple, Optional
+from itertools import chain
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from sqlmodel import Session, select, col
 from loguru import logger
 
 from ..config import Config, load_config
-from ..plex_client import plex_server, get_library_sections, get_media_parts_from_database, retry_plex_call
+from ..plex_client import plex_server, get_library_sections, get_media_parts_from_database, get_all_media_parts_batch, retry_plex_call
 from ..worker import WorkerPool
 from ..gpu_detection import detect_all_gpus
 from ..utils import setup_working_directory, sanitize_path
@@ -47,6 +49,11 @@ class DbProgressManager:
         if is_critical:
             # Write immediately for critical updates (start, complete, fail)
             self._write_update_immediate(item_key, data)
+            # Clear any pending batched updates for this item to prevent stale updates from overwriting terminal states
+            with self.update_lock:
+                if item_key in self.pending_updates:
+                    del self.pending_updates[item_key]
+                    logger.debug(f"Cleared pending batch updates for item {item_key} after critical update")
         else:
             # Batch non-critical updates (progress updates during processing)
             with self.update_lock:
@@ -174,8 +181,9 @@ class DbProgressManager:
             logger.info(f"Marked item {item.id} ({item.title}) as COMPLETED")
 
         elif progress > 0:
-            # Processing
-            if item.status != PreviewStatus.COMPLETED:
+            # Processing - but don't overwrite terminal states (FAILED, COMPLETED, SLOW_FAILED)
+            # This prevents stale batched updates from overwriting critical state changes
+            if item.status not in [PreviewStatus.FAILED, PreviewStatus.SLOW_FAILED, PreviewStatus.COMPLETED]:
                 item.status = PreviewStatus.PROCESSING
             item.progress = int(progress)
             if avg_speed:
@@ -226,13 +234,89 @@ class Scheduler:
         logger.info("Manual sync requested")
         self.sync_wake_event.set()  # Wake sync thread for immediate sync
 
+    def validate_mount_paths(self) -> tuple[bool, list[str]]:
+        """
+        Validate that configured mount check paths exist and are accessible.
+
+        Returns:
+            tuple: (all_valid, list_of_missing_paths)
+        """
+        try:
+            with Session(engine) as session:
+                settings = session.get(AppSettings, 1)
+
+                # If mount check is disabled, always return valid
+                if not settings or not settings.mount_check_enabled:
+                    logger.debug("Mount validation disabled, skipping check")
+                    return True, []
+
+                # If no paths configured, check common media locations
+                check_paths = []
+                if settings.mount_check_paths:
+                    check_paths = [p.strip() for p in settings.mount_check_paths.split(',') if p.strip()]
+
+                if not check_paths:
+                    logger.debug("No mount check paths configured, validation passes")
+                    return True, []
+
+                missing_paths = []
+                for path in check_paths:
+                    if not os.path.exists(path):
+                        missing_paths.append(path)
+                        logger.warning(f"Mount check failed: Path does not exist: {path}")
+                    else:
+                        # Try to check if it's actually accessible (test read)
+                        try:
+                            if os.path.isfile(path):
+                                # For files, try to stat them
+                                os.stat(path)
+                            elif os.path.isdir(path):
+                                # For directories, try to list them
+                                os.listdir(path)
+                            logger.debug(f"Mount check passed: {path}")
+                        except (OSError, PermissionError) as e:
+                            missing_paths.append(path)
+                            logger.warning(f"Mount check failed: Path exists but not accessible: {path} ({e})")
+
+                if missing_paths:
+                    return False, missing_paths
+                else:
+                    return True, []
+
+        except Exception as e:
+            logger.error(f"Mount validation error: {e}")
+            # On error, assume mounts are OK to avoid false positives
+            return True, []
+
     def pause(self):
         self.paused = True
         logger.info("Queue paused")
+        # Persist to database
+        try:
+            with Session(engine) as session:
+                settings = session.get(AppSettings, 1)
+                if not settings:
+                    settings = AppSettings(id=1)
+                settings.queue_paused = True
+                session.add(settings)
+                session.commit()
+        except Exception as e:
+            logger.error(f"Failed to persist pause state to database: {e}")
 
     def resume(self):
         self.paused = False
         logger.info("Queue resumed")
+        # Persist to database
+        try:
+            with Session(engine) as session:
+                settings = session.get(AppSettings, 1)
+                if not settings:
+                    settings = AppSettings(id=1)
+                settings.queue_paused = False
+                session.add(settings)
+                session.commit()
+        except Exception as e:
+            logger.error(f"Failed to persist resume state to database: {e}")
 
     def _get_bif_path(self, bundle_hash: str) -> str:
         """Construct BIF file path from bundle hash"""
@@ -372,6 +456,13 @@ class Scheduler:
                 else:
                     self.last_sync_time = datetime.fromtimestamp(0) # Epoch start
 
+                # Load paused state from DB if available
+                if db_config and hasattr(db_config, 'queue_paused'):
+                    self.paused = db_config.queue_paused
+                    logger.info(f"Loaded queue paused state from database: {self.paused}")
+                else:
+                    self.paused = False
+
                 # Setup working directory
                 try:
                     self.config.working_tmp_folder = setup_working_directory(self.config.tmp_folder)
@@ -447,9 +538,7 @@ class Scheduler:
                         continue
 
                 self.process_queue()
-                
-                logger.debug(f"Scheduler loop done. Sleeping for {self.config.scheduler_loop_interval}s.")
-                
+
                 # Clear wake event before waiting (if it was set)
                 self.wake_event.clear()
 
@@ -960,10 +1049,12 @@ class Scheduler:
 
     def detect_priority_items(self, plex) -> set:
         """
-        Detect priority items from Plex:
+        Detect priority items from Plex (single or multi-user mode):
         1. On-deck items (up next to watch)
-        2. Recently played items (last 50)
+        2. Recently played items (last N per user)
         3. Adjacent episodes (all episodes in same season as recently played)
+
+        When multi-user mode is enabled, collects priority items from all users on the server.
 
         Args:
             plex: PlexServer instance
@@ -973,50 +1064,27 @@ class Scheduler:
         """
         priority_keys = set()
 
+        # Check if multi-user priority is enabled
+        enable_multi_user = False
+        history_limit = 50
         try:
-            # Step 1: Get on-deck items
-            logger.debug("Querying on-deck items...")
-            try:
-                on_deck_items = retry_plex_call(plex.library.onDeck)
-                for item in on_deck_items:
-                    priority_keys.add(int(item.ratingKey))
-                    logger.debug(f"Priority (on-deck): {item.title} ({item.ratingKey})")
-            except Exception as e:
-                logger.warning(f"Failed to get on-deck items: {e}")
+            with Session(engine) as session:
+                settings = session.get(AppSettings, 1)
+                if settings:
+                    enable_multi_user = settings.enable_multi_user_priority
+                    history_limit = settings.priority_history_limit
+        except Exception as e:
+            logger.debug(f"Could not load multi-user priority settings: {e}")
 
-            # Step 2: Get recently played items (last 50)
-            logger.debug("Querying recently played items (last 50)...")
-            try:
-                history_items = retry_plex_call(plex.library.history, maxresults=50)
-
-                # Track seasons we've seen to avoid duplicate season queries
-                processed_seasons = set()
-
-                for item in history_items:
-                    priority_keys.add(int(item.ratingKey))
-                    logger.debug(f"Priority (history): {item.title} ({item.ratingKey})")
-
-                    # Step 3: If it's an episode, get all episodes from same season
-                    if item.type == 'episode':
-                        try:
-                            # Get parent season
-                            season = retry_plex_call(item.season)
-                            season_key = int(season.ratingKey)
-
-                            # Only process each season once (optimization)
-                            if season_key not in processed_seasons:
-                                processed_seasons.add(season_key)
-
-                                # Get all episodes in this season
-                                episodes = retry_plex_call(season.episodes)
-                                for ep in episodes:
-                                    priority_keys.add(int(ep.ratingKey))
-
-                                logger.debug(f"Priority (adjacent): Added {len(episodes)} episodes from {season.title}")
-                        except Exception as e:
-                            logger.warning(f"Failed to get adjacent episodes for {item.title}: {e}")
-            except Exception as e:
-                logger.warning(f"Failed to get history items: {e}")
+        try:
+            if enable_multi_user:
+                # Multi-user mode: Get priority items for all users on the server
+                logger.info("Multi-user priority mode enabled - checking all users on server")
+                priority_keys = self._detect_priority_items_all_users(plex, history_limit)
+            else:
+                # Single-user mode: Get priority items for current user only
+                logger.debug("Single-user priority mode - checking current authenticated user only")
+                priority_keys = self._detect_priority_items_single_user(plex, history_limit)
 
             logger.info(f"Detected {len(priority_keys)} priority items total")
             return priority_keys
@@ -1027,9 +1095,345 @@ class Scheduler:
             logger.error(traceback.format_exc())
             return set()
 
-    def sync_library(self):
-        logger.debug("Syncing library with Plex...")
+    def _detect_priority_items_single_user(self, plex, history_limit: int) -> set:
+        """
+        Detect priority items for the current authenticated user.
+
+        Args:
+            plex: PlexServer instance
+            history_limit: Number of recent history items to check
+
+        Returns:
+            set: Set of Plex rating keys (int) that are priority items
+        """
+        priority_keys = set()
+
+        # Step 1: Get on-deck items
+        logger.debug("Querying on-deck items...")
         try:
+            on_deck_items = retry_plex_call(plex.library.onDeck)
+            for item in on_deck_items:
+                if item.ratingKey is not None:
+                    priority_keys.add(int(item.ratingKey))
+                    logger.debug(f"Priority (on-deck): {item.title} ({item.ratingKey})")
+                else:
+                    logger.debug(f"Skipping on-deck item with no ratingKey: {item.title}")
+        except Exception as e:
+            logger.warning(f"Failed to get on-deck items: {e}")
+
+        # Step 2: Get recently played items
+        logger.debug(f"Querying recently played items (last {history_limit})...")
+        try:
+            history_items = retry_plex_call(plex.library.history, maxresults=history_limit)
+
+            # Track seasons we've seen to avoid duplicate season queries
+            processed_seasons = set()
+
+            for item in history_items:
+                if item.ratingKey is None:
+                    logger.debug(f"Skipping history item with no ratingKey: {getattr(item, 'title', 'Unknown')}")
+                    continue
+
+                priority_keys.add(int(item.ratingKey))
+                logger.debug(f"Priority (history): {item.title} ({item.ratingKey})")
+
+                # Step 3: If it's an episode, get all episodes from same season
+                if item.type == 'episode':
+                    try:
+                        # Get parent season
+                        season = retry_plex_call(item.season)
+                        if season.ratingKey is None:
+                            logger.debug(f"Skipping season with no ratingKey for episode: {item.title}")
+                            continue
+
+                        season_key = int(season.ratingKey)
+
+                        # Only process each season once (optimization)
+                        if season_key not in processed_seasons:
+                            processed_seasons.add(season_key)
+
+                            # Get all episodes in this season
+                            episodes = retry_plex_call(season.episodes)
+                            for ep in episodes:
+                                if ep.ratingKey is not None:
+                                    priority_keys.add(int(ep.ratingKey))
+
+                            logger.debug(f"Priority (adjacent): Added {len(episodes)} episodes from {season.title}")
+                    except Exception as e:
+                        logger.warning(f"Failed to get adjacent episodes for {item.title}: {e}")
+        except Exception as e:
+            logger.warning(f"Failed to get history items: {e}")
+
+        return priority_keys
+
+    def _detect_priority_items_all_users(self, plex, history_limit: int) -> set:
+        """
+        Detect priority items for all users on the Plex server.
+
+        Requires server owner/admin token to access all users' data.
+
+        Args:
+            plex: PlexServer instance
+            history_limit: Number of recent history items to check per user
+
+        Returns:
+            set: Set of Plex rating keys (int) that are priority items
+        """
+        priority_keys = set()
+
+        # Get all users on the server
+        all_users = []
+        try:
+            # Try to get myPlex account (requires owner/admin)
+            my_account = plex.myPlexAccount()
+
+            # Get managed users (home users)
+            try:
+                users = my_account.users()
+                logger.info(f"Found {len(users)} managed users on server")
+
+                # Include the server owner
+                all_users.append({
+                    'username': my_account.username or 'Server Owner',
+                    'id': my_account.id,
+                    'is_owner': True
+                })
+
+                # Add managed users
+                for u in users:
+                    all_users.append({
+                        'username': u.username or u.title,
+                        'id': u.id,
+                        'is_owner': False
+                    })
+
+            except Exception as e:
+                logger.warning(f"Could not get managed users list: {e}")
+                # Fallback to just the owner
+                all_users.append({
+                    'username': my_account.username or 'Server Owner',
+                    'id': my_account.id,
+                    'is_owner': True
+                })
+
+        except Exception as e:
+            logger.warning(f"Could not access myPlex account (may not be server owner): {e}")
+            logger.info("Falling back to single-user priority detection")
+            return self._detect_priority_items_single_user(plex, history_limit)
+
+        logger.info(f"Checking priority items for {len(all_users)} users")
+
+        # Track seasons globally to avoid duplicate processing across users
+        global_processed_seasons = set()
+
+        # Process each user
+        for user_info in all_users:
+            username = user_info['username']
+            logger.debug(f"Checking priority items for user: {username}")
+
+            # Get on-deck items for this user
+            try:
+                # Note: plex.library.onDeck() returns results for all users when called with admin token
+                # We can't filter by specific user easily with PlexAPI, so we get all on-deck items
+                # This is actually beneficial as it includes all users' on-deck items
+                if user_info['is_owner']:
+                    on_deck_items = retry_plex_call(plex.library.onDeck)
+                    for item in on_deck_items:
+                        if item.ratingKey is not None:
+                            priority_keys.add(int(item.ratingKey))
+                            logger.debug(f"Priority (on-deck): {item.title} ({item.ratingKey})")
+                # For non-owner users, on-deck is already included above
+            except Exception as e:
+                logger.warning(f"Failed to get on-deck items for {username}: {e}")
+
+            # Get recently watched items for this user
+            try:
+                # Get account views/history - this requires querying via account object
+                # PlexAPI limitation: library.history() with accountID filter
+                history_items = retry_plex_call(
+                    plex.library.history,
+                    maxresults=history_limit,
+                    accountID=user_info['id']
+                )
+
+                for item in history_items:
+                    if item.ratingKey is None:
+                        logger.debug(f"Skipping history item with no ratingKey: {getattr(item, 'title', 'Unknown')}")
+                        continue
+
+                    priority_keys.add(int(item.ratingKey))
+                    logger.debug(f"Priority (history, {username}): {item.title} ({item.ratingKey})")
+
+                    # If it's an episode, get all episodes from same season
+                    if item.type == 'episode':
+                        try:
+                            season = retry_plex_call(item.season)
+                            if season.ratingKey is None:
+                                logger.debug(f"Skipping season with no ratingKey for episode: {item.title}")
+                                continue
+
+                            season_key = int(season.ratingKey)
+
+                            # Only process each season once globally (across all users)
+                            if season_key not in global_processed_seasons:
+                                global_processed_seasons.add(season_key)
+
+                                # Get all episodes in this season
+                                episodes = retry_plex_call(season.episodes)
+                                for ep in episodes:
+                                    if ep.ratingKey is not None:
+                                        priority_keys.add(int(ep.ratingKey))
+
+                                logger.debug(f"Priority (adjacent, {username}): Added {len(episodes)} episodes from {season.title}")
+                        except Exception as e:
+                            logger.warning(f"Failed to get adjacent episodes for {username}/{item.title}: {e}")
+
+            except Exception as e:
+                logger.warning(f"Failed to get history for user {username}: {e}")
+                # Continue with other users even if one fails
+
+        return priority_keys
+
+    def _process_sync_item(self, section_title, item_key, title, item_type, bundle_hash, added_at,
+                          media_parts, bundle_hash_map, priority_item_keys, db_item):
+        """
+        Process a single item during sync. Returns tuple of (item_to_add_or_update, stat_type).
+        stat_type is one of: 'movie_added', 'movie_updated', 'episode_added', 'episode_updated', None
+        """
+        import json
+
+        # Prepare media parts JSON
+        media_parts_json = None
+        if media_parts:
+            parts_data = [
+                {
+                    "file_path": file_path,
+                    "bundle_hash": bundle_hash_part,
+                    "bif_path": self._get_bif_path(bundle_hash_part) if bundle_hash_part else None
+                }
+                for file_path, bundle_hash_part in media_parts
+            ]
+            media_parts_json = json.dumps(parts_data)
+
+        # Check if BIF exists using pre-scanned map
+        bif_exists = bundle_hash and bundle_hash in bundle_hash_map
+
+        # Check if media files exist (detect broken symlinks)
+        media_exists = False
+        if media_parts:
+            for file_path, _ in media_parts:
+                if file_path and os.path.exists(file_path):
+                    media_exists = True
+                    break
+
+        if not db_item:
+            # Create new item
+            if not media_exists:
+                initial_status = PreviewStatus.MEDIA_MISSING
+                initial_progress = 0
+            elif bif_exists:
+                initial_status = PreviewStatus.COMPLETED
+                initial_progress = 100
+            else:
+                initial_status = PreviewStatus.MISSING
+                initial_progress = 0
+
+            new_item = MediaItem(
+                id=int(item_key),
+                title=title,
+                media_type=MediaType.MOVIE if item_type == 'movie' else MediaType.EPISODE,
+                library_name=section_title,
+                status=initial_status,
+                progress=initial_progress,
+                bundle_hash=bundle_hash,
+                media_parts_info=media_parts_json,
+                added_at=added_at if added_at else datetime.utcnow(),
+                error_message="Media file not found (broken symlink or deleted)" if not media_exists else None,
+                is_priority=int(item_key) in priority_item_keys
+            )
+
+            stat_type = 'movie_added' if item_type == 'movie' else 'episode_added'
+            return (new_item, stat_type)
+        else:
+            # Update existing item
+            item_updated = False
+
+            # Update priority status
+            expected_priority = int(item_key) in priority_item_keys
+            if db_item.is_priority != expected_priority:
+                db_item.is_priority = expected_priority
+                item_updated = True
+                if expected_priority:
+                    logger.debug(f"Item {item_key} ({title}) marked as priority")
+
+            # Update hash if missing
+            if not db_item.bundle_hash and bundle_hash:
+                db_item.bundle_hash = bundle_hash
+
+            # Update media_parts_info
+            if media_parts_json:
+                db_item.media_parts_info = media_parts_json
+
+            # Update added_at if differs
+            if added_at and db_item.added_at != added_at:
+                db_item.added_at = added_at
+
+            # Check if media files exist - if not, mark as MEDIA_MISSING
+            if not media_exists:
+                if db_item.status != PreviewStatus.MEDIA_MISSING:
+                    logger.info(f"Item {item_key} ({title}) has missing media files - marking as MEDIA_MISSING")
+                    db_item.status = PreviewStatus.MEDIA_MISSING
+                    db_item.progress = 0
+                    db_item.error_message = "Media file not found (broken symlink or deleted)"
+                    item_updated = True
+            else:
+                # Media exists - check BIF status
+                any_missing_bif = False
+                if media_parts_json:
+                    parts_data = json.loads(media_parts_json)
+                    any_missing_bif = any(part.get('bif_path') is None for part in parts_data)
+
+                if db_item.status == PreviewStatus.COMPLETED and any_missing_bif:
+                    logger.info(f"Item {item_key} ({title}) is completed but has new parts without BIF files - resetting to missing")
+                    db_item.status = PreviewStatus.MISSING
+                    db_item.progress = 0
+                    db_item.updated_at = datetime.utcnow()
+                    item_updated = True
+                elif db_item.status != PreviewStatus.COMPLETED and bif_exists and not any_missing_bif:
+                    db_item.status = PreviewStatus.COMPLETED
+                    db_item.progress = 100
+                    item_updated = True
+                elif db_item.status == PreviewStatus.MEDIA_MISSING:
+                    logger.info(f"Item {item_key} ({title}) media file now exists - resetting to MISSING")
+                    db_item.status = PreviewStatus.MISSING
+                    db_item.progress = 0
+                    db_item.error_message = None
+                    db_item.updated_at = datetime.utcnow()
+                    item_updated = True
+
+            stat_type = None
+            if item_updated:
+                stat_type = 'movie_updated' if db_item.media_type == MediaType.MOVIE else 'episode_updated'
+
+            return (db_item, stat_type)
+
+    def sync_library(self):
+        logger.info("Syncing library with Plex...")
+        sync_start_time = time.time()
+        try:
+            # Step 0: Validate mount paths before syncing
+            mount_valid, missing_paths = self.validate_mount_paths()
+            if not mount_valid:
+                logger.error(f"⚠️⚠️⚠️  MOUNT VALIDATION FAILED - Sync aborted! ⚠️⚠️⚠️")
+                logger.error(f"Missing/inaccessible paths: {', '.join(missing_paths)}")
+                logger.error("Please ensure your media mount is ready before syncing")
+                logger.error("Sync will be retried on next interval")
+                # Pause queue to prevent processing with unmounted media
+                if not self.paused:
+                    logger.error("Auto-pausing queue due to mount failure")
+                    self.pause()
+                return
+
             # Track sync statistics
             sync_stats = {
                 "movies_added": 0,
@@ -1041,10 +1445,14 @@ class Scheduler:
             }
 
             # Step 1: Scan filesystem once for all BIF files
+            logger.info("Scanning filesystem for BIF files...")
+            bif_scan_start = time.time()
             bundle_hash_map = self._scan_filesystem_for_bifs()
-            logger.debug(f"Found {len(bundle_hash_map)} existing BIF files in filesystem")
+            logger.info(f"Found {len(bundle_hash_map)} existing BIF files in {time.time() - bif_scan_start:.2f}s")
 
             # Step 2: Get items from Plex
+            logger.info("Fetching items from Plex...")
+            plex_fetch_start = time.time()
             plex = plex_server(self.config)
             sections = get_library_sections(plex, self.config)
 
@@ -1052,163 +1460,72 @@ class Scheduler:
             priority_item_keys = self.detect_priority_items(plex)
             logger.debug(f"Priority detection complete: {len(priority_item_keys)} items")
 
-            # Track all valid item IDs from Plex for orphan cleanup
+            # Collect all items from Plex into a list
+            all_items = []
             plex_item_ids = set()
+            for section, items in sections:
+                for item_key, title, item_type, bundle_hash, added_at in items:
+                    plex_item_ids.add(int(item_key))
+                    all_items.append((section.title, item_key, title, item_type, bundle_hash, added_at))
+
+            logger.info(f"Fetched {len(all_items)} items from Plex in {time.time() - plex_fetch_start:.2f}s")
+
+            # Step 3: Batch query all media parts at once
+            logger.info("Batch querying media parts from Plex database...")
+            batch_query_start = time.time()
+            all_rating_keys = [int(item[1]) for item in all_items]
+            media_parts_map = get_all_media_parts_batch(self.config.plex_config_folder, all_rating_keys)
+            logger.info(f"Queried media parts for {len(all_rating_keys)} items in {time.time() - batch_query_start:.2f}s")
+
+            # Step 4: Process items in parallel with threading
+            logger.info(f"Processing {len(all_items)} items with parallel threads...")
+            process_start = time.time()
 
             with Session(engine) as session:
-                for section, items in sections:
-                    for item_key, title, item_type, bundle_hash, added_at in items:
-                        # Track this item ID as valid in Plex
-                        plex_item_ids.add(int(item_key))
-
-                        # Query all media parts for this item from database
-                        import json
-                        media_parts = get_media_parts_from_database(self.config.plex_config_folder, int(item_key))
-                        media_parts_json = None
-                        if media_parts:
-                            # Convert to JSON array of objects
-                            parts_data = [
-                                {
-                                    "file_path": file_path,
-                                    "bundle_hash": bundle_hash_part,
-                                    "bif_path": self._get_bif_path(bundle_hash_part) if bundle_hash_part else None
-                                }
-                                for file_path, bundle_hash_part in media_parts
-                            ]
-                            media_parts_json = json.dumps(parts_data)
-
-                        # Check if exists
-                        db_item = session.get(MediaItem, int(item_key))
-
-                        # Check if BIF exists using pre-scanned map (no filesystem access)
-                        bif_exists = bundle_hash and bundle_hash in bundle_hash_map
-
-                        # Check if media files exist (detect broken symlinks)
-                        media_exists = False
-                        if media_parts:
-                            for file_path, _ in media_parts:
-                                if file_path and os.path.exists(file_path):
-                                    media_exists = True
-                                    break
-
-                        if not db_item:
-                            # Create new
-                            # Determine initial status based on BIF existence and media file existence
-                            if not media_exists:
-                                initial_status = PreviewStatus.MEDIA_MISSING
-                                initial_progress = 0
-                            elif bif_exists:
-                                initial_status = PreviewStatus.COMPLETED
-                                initial_progress = 100
-                            else:
-                                initial_status = PreviewStatus.MISSING
-                                initial_progress = 0
-
-                            new_item = MediaItem(
-                                id=int(item_key),
-                                title=title,
-                                media_type=MediaType.MOVIE if item_type == 'movie' else MediaType.EPISODE,
-                                library_name=section.title,
-                                status=initial_status,
-                                progress=initial_progress,
-                                bundle_hash=bundle_hash,
-                                media_parts_info=media_parts_json,
-                                added_at=added_at if added_at else datetime.utcnow(),
-                                error_message="Media file not found (broken symlink or deleted)" if not media_exists else None,
-                                is_priority=int(item_key) in priority_item_keys
-                            )
-                            session.add(new_item)
-
-                            # Track addition in sync stats
-                            if item_type == 'movie':
-                                sync_stats["movies_added"] += 1
-                            else:
-                                sync_stats["episodes_added"] += 1
-                        else:
-                            # Track if this item gets updated
-                            item_updated = False
-
-                            # Update priority status
-                            expected_priority = int(item_key) in priority_item_keys
-                            if db_item.is_priority != expected_priority:
-                                db_item.is_priority = expected_priority
-                                session.add(db_item)
-                                item_updated = True
-                                if expected_priority:
-                                    logger.debug(f"Item {item_key} ({title}) marked as priority")
-
-                            # Update hash if missing
-                            if not db_item.bundle_hash and bundle_hash:
-                                db_item.bundle_hash = bundle_hash
-                                session.add(db_item)
-
-                            # Update media_parts_info
-                            if media_parts_json:
-                                db_item.media_parts_info = media_parts_json
-                                session.add(db_item)
-
-                            # Update added_at if differs (sync)
-                            if added_at and db_item.added_at != added_at:
-                                db_item.added_at = added_at
-                                session.add(db_item)
-
-                            # Check if media files exist - if not, mark as MEDIA_MISSING
-                            if not media_exists:
-                                # Media file doesn't exist (broken symlink or deleted)
-                                if db_item.status != PreviewStatus.MEDIA_MISSING:
-                                    logger.info(f"Item {item_key} ({title}) has missing media files - marking as MEDIA_MISSING")
-                                    db_item.status = PreviewStatus.MEDIA_MISSING
-                                    db_item.progress = 0
-                                    db_item.error_message = "Media file not found (broken symlink or deleted)"
-                                    session.add(db_item)
-                                    item_updated = True
-                            else:
-                                # Media exists - check BIF status
-                                # Check if any parts are missing BIF files
-                                any_missing_bif = False
-                                if media_parts_json:
-                                    parts_data = json.loads(media_parts_json)
-                                    any_missing_bif = any(part.get('bif_path') is None for part in parts_data)
-
-                                # If item is completed but has parts without BIF files, reset to missing
-                                # This handles the case where a new version is added (e.g., 4K added to existing 1080p)
-                                if db_item.status == PreviewStatus.COMPLETED and any_missing_bif:
-                                    logger.info(f"Item {item_key} ({title}) is completed but has new parts without BIF files - resetting to missing")
-                                    db_item.status = PreviewStatus.MISSING
-                                    db_item.progress = 0
-                                    db_item.updated_at = datetime.utcnow()  # Update timestamp so it gets queued soon
-                                    session.add(db_item)
-                                    item_updated = True
-                                # If existing item is missing/queued/processing but BIF exists, mark completed
-                                elif db_item.status != PreviewStatus.COMPLETED and bif_exists and not any_missing_bif:
-                                    db_item.status = PreviewStatus.COMPLETED
-                                    db_item.progress = 100
-                                    session.add(db_item)
-                                    item_updated = True
-                                # If item was MEDIA_MISSING but media now exists, reset to MISSING for processing
-                                elif db_item.status == PreviewStatus.MEDIA_MISSING:
-                                    logger.info(f"Item {item_key} ({title}) media file now exists - resetting to MISSING")
-                                    db_item.status = PreviewStatus.MISSING
-                                    db_item.progress = 0
-                                    db_item.error_message = None
-                                    db_item.updated_at = datetime.utcnow()
-                                    session.add(db_item)
-                                    item_updated = True
-
-                            # Track update in sync stats
-                            if item_updated:
-                                if db_item.media_type == MediaType.MOVIE:
-                                    sync_stats["movies_updated"] += 1
-                                else:
-                                    sync_stats["episodes_updated"] += 1
-
-                # Step 3: Clean up orphaned items (items in DB but no longer in Plex)
-                logger.debug(f"Found {len(plex_item_ids)} items in Plex")
-
-                # Get all item IDs currently in database
+                # Load all existing items from database into a dict for fast lookup
                 from sqlmodel import select
-                db_items = session.exec(select(MediaItem)).all()
-                db_item_ids = {item.id for item in db_items}
+                db_items_list = session.exec(select(MediaItem)).all()
+                db_items_dict = {item.id: item for item in db_items_list}
+                db_item_ids = set(db_items_dict.keys())
+
+                # Process items in parallel
+                items_to_update = []
+                stats_lock = threading.Lock()
+
+                def process_item_wrapper(item_data):
+                    section_title, item_key, title, item_type, bundle_hash, added_at = item_data
+                    media_parts = media_parts_map.get(int(item_key), [])
+                    db_item = db_items_dict.get(int(item_key))
+
+                    return self._process_sync_item(
+                        section_title, item_key, title, item_type, bundle_hash, added_at,
+                        media_parts, bundle_hash_map, priority_item_keys, db_item
+                    )
+
+                # Use ThreadPoolExecutor for parallel processing
+                max_workers = min(32, len(all_items))  # Limit to 32 threads
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = {executor.submit(process_item_wrapper, item): item for item in all_items}
+
+                    for future in as_completed(futures):
+                        try:
+                            item, stat_type = future.result()
+                            if item:
+                                items_to_update.append(item)
+                                if stat_type:
+                                    with stats_lock:
+                                        sync_stats[stat_type] += 1
+                        except Exception as e:
+                            logger.error(f"Error processing item: {e}")
+
+                # Batch add all items to session
+                for item in items_to_update:
+                    session.add(item)
+
+                logger.info(f"Processed {len(all_items)} items in {time.time() - process_start:.2f}s")
+
+                # Step 5: Clean up orphaned items (items in DB but no longer in Plex)
+                logger.debug(f"Found {len(plex_item_ids)} items in Plex")
                 logger.debug(f"Found {len(db_item_ids)} items in database")
 
                 # Find orphaned items (in DB but not in Plex)
@@ -1233,6 +1550,45 @@ class Scheduler:
                 else:
                     logger.debug("No orphaned items found")
 
+                # Sanity check: Detect mass MEDIA_MISSING marking (likely mount issue)
+                # Count how many items would be newly marked as MEDIA_MISSING
+                newly_media_missing = 0
+                total_checked = 0
+                for item in chain(session.new, session.dirty):
+                    if isinstance(item, MediaItem):
+                        # Check if this is a newly marked MEDIA_MISSING item
+                        if hasattr(item, '__dict__') and '_sa_instance_state' in item.__dict__:
+                            # Get original state from session
+                            history = session.identity_map.get((MediaItem, item.id))
+                            if history and getattr(history, 'status', None) != PreviewStatus.MEDIA_MISSING and item.status == PreviewStatus.MEDIA_MISSING:
+                                newly_media_missing += 1
+                        total_checked += 1
+
+                # Get threshold from settings
+                mount_failure_threshold = 50.0  # Default
+                try:
+                    settings = session.get(AppSettings, 1)
+                    if settings and hasattr(settings, 'mount_failure_threshold'):
+                        mount_failure_threshold = settings.mount_failure_threshold
+                except:
+                    pass
+
+                # Calculate percentage
+                if total_checked > 0:
+                    missing_percentage = (newly_media_missing / total_checked) * 100
+                    if missing_percentage > mount_failure_threshold:
+                        logger.error(f"⚠️⚠️⚠️  SANITY CHECK FAILED - Sync aborted! ⚠️⚠️⚠️")
+                        logger.error(f"{newly_media_missing}/{total_checked} items ({missing_percentage:.1f}%) would be marked as MEDIA_MISSING")
+                        logger.error(f"This exceeds the threshold of {mount_failure_threshold}% and likely indicates a mount failure")
+                        logger.error("Changes rolled back. Please check your media mounts and retry sync")
+                        # Rollback instead of commit
+                        session.rollback()
+                        # Pause queue
+                        if not self.paused:
+                            logger.error("Auto-pausing queue due to suspected mount failure")
+                            self.pause()
+                        return
+
                 session.commit()
             
             # Save last sync time and summary to AppSettings
@@ -1249,12 +1605,24 @@ class Scheduler:
                 new_last_sync_time = settings.last_sync_time # Extract value while session is open
             self.last_sync_time = new_last_sync_time # Assign after session is closed
 
-            logger.info(f"Library sync complete. {sync_stats}")
+            total_sync_time = time.time() - sync_start_time
+            logger.info(f"Library sync complete in {total_sync_time:.2f}s. {sync_stats}")
         except Exception as e:
             logger.error(f"Sync failed: {e}")
 
     def process_queue(self):
         if self.paused:
+            return
+
+        # Validate mount paths before processing
+        mount_valid, missing_paths = self.validate_mount_paths()
+        if not mount_valid:
+            logger.warning(f"Mount validation failed during queue processing: {', '.join(missing_paths)}")
+            logger.warning("Skipping queue processing until mounts are available")
+            # Pause queue to prevent repeated errors
+            if not self.paused:
+                logger.error("Auto-pausing queue due to mount validation failure")
+                self.pause()
             return
 
         # Fetch batch of items - match the number of available workers

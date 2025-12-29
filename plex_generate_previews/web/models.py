@@ -29,7 +29,7 @@ class AppSettings(SQLModel, table=True):
     plex_server_name: Optional[str] = None
     plex_client_identifier: Optional[str] = None # Plex server identifier
     admin_password_hash: Optional[str] = None
-    
+
     # We can store other config overrides here too if we want
     gpu_threads: int = 1
     cpu_threads: int = 1
@@ -37,6 +37,16 @@ class AppSettings(SQLModel, table=True):
     sync_interval: int = 21600  # Sync interval in seconds (default: 6 hours)
     last_sync_time: Optional[datetime] = None
     last_sync_summary: Optional[str] = None  # JSON summary of last sync (items added/updated/deleted)
+    queue_paused: bool = False  # Persistent paused/resumed state for queue processing
+
+    # Mount protection settings
+    mount_check_enabled: bool = True  # Enable mount validation before sync/processing
+    mount_check_paths: Optional[str] = None  # Comma-separated paths to check (e.g., "/mnt/media/.mounted,/data/.marker")
+    mount_failure_threshold: float = 50.0  # If more than this % of items become missing, pause and alert (default: 50%)
+
+    # Multi-user priority settings
+    enable_multi_user_priority: bool = False  # Enable priority detection for all users on the server
+    priority_history_limit: int = 50  # Number of recently watched items to check per user (default: 50)
 
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
