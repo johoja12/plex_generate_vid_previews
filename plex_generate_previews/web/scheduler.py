@@ -1222,14 +1222,25 @@ class Scheduler:
             return self._detect_priority_items_single_user(plex, history_limit)
 
         logger.info(f"Checking priority items for {len(all_users)} users")
+        logger.debug(f"User list: {[u['username'] for u in all_users]}")
 
         # Track seasons globally to avoid duplicate processing across users
         global_processed_seasons = set()
 
         # Fetch watch history from database (more reliable than API for multi-user)
-        logger.debug("Fetching watch history from database for all users...")
+        logger.info("Fetching watch history from database for all users...")
         history_by_user = get_watch_history_from_database(self.config.plex_config_folder, history_limit)
-        logger.debug(f"Retrieved history for {len(history_by_user)} users from database")
+        logger.info(f"Retrieved history for {len(history_by_user)} users from database")
+
+        # Verify we got history for all expected users
+        db_account_ids = set(history_by_user.keys())
+        plex_account_ids = set(u['id'] for u in all_users)
+        missing_users = plex_account_ids - db_account_ids
+        if missing_users:
+            logger.warning(f"No watch history found in database for {len(missing_users)} user(s): {missing_users}")
+            logger.warning("These users may not have watched anything yet, or their account_id format differs")
+        else:
+            logger.info(f"✓ Found watch history for all {len(all_users)} users")
 
         # Process each user
         for user_info in all_users:

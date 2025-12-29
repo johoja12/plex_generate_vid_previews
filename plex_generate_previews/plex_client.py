@@ -416,7 +416,14 @@ def get_watch_history_from_database(plex_config_folder: str, limit_per_user: int
             if len(history_by_user[account_id]) < limit_per_user:
                 history_by_user[account_id].append((rating_key, viewed_at))
 
-        logger.debug(f"Retrieved watch history for {len(history_by_user)} users from database")
+        # Log statistics about the retrieved history
+        total_views = sum(len(views) for views in history_by_user.values())
+        logger.info(f"Retrieved watch history for {len(history_by_user)} users from database ({total_views} total views)")
+
+        # Log per-user statistics at debug level
+        for account_id, views in sorted(history_by_user.items(), key=lambda x: len(x[1]), reverse=True):
+            logger.debug(f"  Account {account_id}: {len(views)} views")
+
         return history_by_user
 
     except sqlite3.Error as e:
