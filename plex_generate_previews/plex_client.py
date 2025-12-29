@@ -392,12 +392,14 @@ def get_watch_history_from_database(plex_config_folder: str, limit_per_user: int
         cursor = conn.cursor()
 
         # Query watch history from metadata_item_views table
-        # This table tracks all views with account_id, metadata_item_id, and viewed_at timestamp
+        # Join with metadata_items to get the rating key (id)
+        # metadata_item_views stores the guid, we need to join to get the actual rating key
         query = """
-            SELECT account_id, metadata_item_id, viewed_at
-            FROM metadata_item_views
-            WHERE account_id IS NOT NULL
-            ORDER BY account_id, viewed_at DESC
+            SELECT miv.account_id, mi.id as rating_key, miv.viewed_at
+            FROM metadata_item_views miv
+            JOIN metadata_items mi ON miv.guid = mi.guid
+            WHERE miv.account_id IS NOT NULL
+            ORDER BY miv.account_id, miv.viewed_at DESC
         """
 
         cursor.execute(query)
@@ -406,13 +408,13 @@ def get_watch_history_from_database(plex_config_folder: str, limit_per_user: int
 
         # Organize by account_id and limit per user
         history_by_user = {}
-        for account_id, metadata_item_id, viewed_at in results:
+        for account_id, rating_key, viewed_at in results:
             if account_id not in history_by_user:
                 history_by_user[account_id] = []
 
             # Only add if we haven't reached the limit for this user
             if len(history_by_user[account_id]) < limit_per_user:
-                history_by_user[account_id].append((metadata_item_id, viewed_at))
+                history_by_user[account_id].append((rating_key, viewed_at))
 
         logger.debug(f"Retrieved watch history for {len(history_by_user)} users from database")
         return history_by_user
