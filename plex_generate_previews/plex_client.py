@@ -254,6 +254,64 @@ def get_media_parts_from_database(plex_config_folder: str, rating_key: int):
         return []
 
 
+def get_all_media_parts_batch(plex_config_folder: str, rating_keys: list[int]) -> dict:
+    """
+    Query media parts for multiple items at once from the Plex SQLite database.
+
+    This is much more efficient than calling get_media_parts_from_database() for each item individually.
+
+    Args:
+        plex_config_folder: Path to Plex config folder
+        rating_keys: List of Plex rating keys (item IDs)
+
+    Returns:
+        dict: Dictionary mapping rating_key -> [(file_path, bundle_hash), ...]
+    """
+    if not rating_keys:
+        return {}
+
+    db_path = os.path.join(plex_config_folder, 'Plug-in Support', 'Databases',
+                           'com.plexapp.plugins.library.db')
+
+    if not os.path.exists(db_path):
+        logger.warning(f"Plex database not found at: {db_path}")
+        return {}
+
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+
+        # Query for all media parts for all rating keys at once
+        placeholders = ','.join('?' * len(rating_keys))
+        query = f"""
+            SELECT media_items.metadata_item_id, media_parts.file, media_parts.hash
+            FROM media_parts
+            JOIN media_items ON media_parts.media_item_id = media_items.id
+            WHERE media_items.metadata_item_id IN ({placeholders})
+        """
+
+        cursor.execute(query, rating_keys)
+        results = cursor.fetchall()
+        conn.close()
+
+        # Build dictionary mapping rating_key -> list of (file_path, bundle_hash)
+        media_parts_map = {}
+        for rating_key, file_path, bundle_hash in results:
+            if file_path:  # Only include if file path exists
+                if rating_key not in media_parts_map:
+                    media_parts_map[rating_key] = []
+                media_parts_map[rating_key].append((file_path, bundle_hash))
+
+        return media_parts_map
+
+    except sqlite3.Error as e:
+        logger.error(f"Database error while batch querying media parts: {e}")
+        return {}
+    except Exception as e:
+        logger.error(f"Unexpected error batch querying database: {type(e).__name__}: {e}")
+        return {}
+
+
 def get_hash_from_database(plex_config_folder: str, file_path: str) -> str:
     """
     Query the bundle hash directly from the Plex SQLite database.

@@ -682,7 +682,8 @@
                     try {
                         const res = await fetch('/api/queue/status');
                         const data = await res.json();
-                        this.paused = data.paused;
+                        // Use database value as source of truth if available, otherwise fall back to memory value
+                        this.paused = data.db_paused !== undefined ? data.db_paused : data.paused;
                     } catch (e) {}
                 },
                 

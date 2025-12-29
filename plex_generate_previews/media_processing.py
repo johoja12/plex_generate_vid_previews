@@ -985,13 +985,16 @@ def process_item(item_key: str, gpu: Optional[str], gpu_device_path: Optional[st
             # Always clean up temp directory (may already be cleaned up by _generate_and_save_bif)
             _cleanup_temp_directory(tmp_path)
 
-    # After processing all media parts, check if we successfully processed at least one
-    # If no parts were processed successfully and we have an error, raise it to mark item as failed
+    # After processing all media parts, check results:
+    # For multi-part items: allow partial success (some parts with BIF, some failed)
+    # For single-part items: must succeed to avoid marking as completed when actually failed
     if not processed_any:
+        # No parts were successfully processed (or skipped with existing BIF)
+        # This means all parts failed or were skipped without existing BIFs
         if processing_error is not None:
             raise processing_error
         else:
-            # If no parts were processed and no specific error occurred, it means
-            # all parts were skipped (e.g., due to missing bundle_hash or file_not_found)
-            # This should be treated as a failure for the item.
             raise RuntimeError(f"No media parts were successfully processed for item {item_key}. All parts were skipped (e.g. missing bundle_hash or file not found).")
+    # Note: If processed_any is True (at least one part has a BIF, either existing or newly created),
+    # we allow the item to succeed even if other parts failed. The UI will show per-part status
+    # based on BIF file existence. This allows multi-part items to have mixed success/failure states.
