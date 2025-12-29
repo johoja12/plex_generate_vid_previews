@@ -1298,7 +1298,7 @@ class Scheduler:
                           media_parts, bundle_hash_map, priority_item_keys, db_item):
         """
         Process a single item during sync. Returns tuple of (item_to_add_or_update, stat_type).
-        stat_type is one of: 'movie_added', 'movie_updated', 'episode_added', 'episode_updated', None
+        stat_type is one of: 'movies_added', 'movies_updated', 'episodes_added', 'episodes_updated', None
         """
         import json
 
@@ -1352,7 +1352,7 @@ class Scheduler:
                 is_priority=int(item_key) in priority_item_keys
             )
 
-            stat_type = 'movie_added' if item_type == 'movie' else 'episode_added'
+            stat_type = 'movies_added' if item_type == 'movie' else 'episodes_added'
             return (new_item, stat_type)
         else:
             # Update existing item
@@ -1413,7 +1413,7 @@ class Scheduler:
 
             stat_type = None
             if item_updated:
-                stat_type = 'movie_updated' if db_item.media_type == MediaType.MOVIE else 'episode_updated'
+                stat_type = 'movies_updated' if db_item.media_type == MediaType.MOVIE else 'episodes_updated'
 
             return (db_item, stat_type)
 
