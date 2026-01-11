@@ -113,6 +113,40 @@
         </div>
     </nav>
 
+    <!-- Rate Limit Info -->
+    <div x-show="stats.rate_limit && stats.rate_limit.limit_gb > 0" x-cloak
+         class="mb-6 p-4 border rounded-lg flex flex-col md:flex-row items-center justify-between transition-colors duration-500"
+         :class="stats.rate_limit.is_limited ? 'bg-teal-900/30 border-teal-600 text-teal-200' : 'bg-gray-800/50 border-gray-700 text-gray-300'">
+        <div class="flex items-center mb-4 md:mb-0">
+            <svg class="w-6 h-6 mr-3" :class="stats.rate_limit.is_limited ? 'text-teal-400' : 'text-gray-500'" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+            </svg>
+            <div>
+                <p class="font-bold flex items-center">
+                    <span x-text="stats.rate_limit.is_limited ? 'Rate Limit Active' : 'Rate Limit Monitoring'"></span>
+                    <template x-if="!stats.rate_limit.is_limited">
+                        <span class="ml-2 px-2 py-0.5 bg-gray-700 text-gray-400 text-[10px] uppercase rounded">Active</span>
+                    </template>
+                </p>
+                <p class="text-sm" x-text="stats.rate_limit.is_limited ? stats.rate_limit.message : 'Currently processing within hourly quota.'"></p>
+            </div>
+        </div>
+        
+        <div class="flex space-x-8 text-center md:text-right">
+            <div>
+                <p class="text-xs uppercase font-bold" :class="stats.rate_limit.is_limited ? 'text-teal-400' : 'text-gray-500'">Quota Remaining</p>
+                <p class="text-lg font-mono font-bold" 
+                   :class="stats.rate_limit.remaining_bytes < 0 ? 'text-red-400' : (stats.rate_limit.is_limited ? 'text-teal-300' : 'text-green-400')"
+                   x-text="(stats.rate_limit.remaining_bytes / 1024 / 1024 / 1024).toFixed(2) + ' GB'">
+                </p>
+            </div>
+            <div>
+                <p class="text-xs uppercase font-bold" :class="stats.rate_limit.is_limited ? 'text-teal-400' : 'text-gray-500'">Usage</p>
+                <p class="text-lg font-mono" x-text="(stats.rate_limit.processed_bytes / 1024 / 1024 / 1024).toFixed(2) + ' / ' + stats.rate_limit.limit_gb + ' GB'"></p>
+            </div>
+        </div>
+    </div>
+
     <!-- Stats Grid -->
     <div class="grid grid-cols-1 md:grid-cols-7 gap-4 mb-8">
         <div class="card border-l-4 border-blue-500">
@@ -403,6 +437,12 @@
                                             <div class="text-gray-200 font-mono text-xs mt-1 break-all bg-gray-900 p-2 rounded" x-text="item.file_path || 'Not yet available'"></div>
                                         </div>
 
+                                        <!-- Symlink Target -->
+                                        <div x-show="item.symlink_target">
+                                            <span class="text-gray-400 font-semibold">↳ Symlink Target:</span>
+                                            <div class="text-blue-200 font-mono text-xs mt-1 break-all bg-gray-900 p-2 rounded border border-blue-900/50" x-text="item.symlink_target"></div>
+                                        </div>
+
                                         <!-- BIF File Path -->
                                         <div>
                                             <span class="text-gray-400 font-semibold">BIF File Path:</span>
@@ -411,7 +451,7 @@
                                     </div>
 
                                     <!-- Processing Info -->
-                                    <div class="grid grid-cols-3 gap-4 text-xs">
+                                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
                                         <div>
                                             <span class="text-gray-400">Progress:</span>
                                             <span class="text-gray-200 ml-2" x-text="item.progress + '%'"></span>
@@ -423,6 +463,10 @@
                                         <div>
                                             <span class="text-gray-400">Library:</span>
                                             <span class="text-gray-200 ml-2" x-text="item.library_name"></span>
+                                        </div>
+                                        <div>
+                                            <span class="text-gray-400">Last Attempt:</span>
+                                            <span class="text-gray-200 ml-2" x-text="formatDateTime(item.updated_at)"></span>
                                         </div>
                                     </div>
                                 </div>
@@ -577,6 +621,14 @@
                     if (!dateString) return '-';
                     return new Date(dateString).toLocaleDateString(undefined, {
                         year: 'numeric', month: 'short', day: 'numeric'
+                    });
+                },
+
+                formatDateTime(dateString) {
+                    if (!dateString) return '-';
+                    return new Date(dateString).toLocaleString(undefined, {
+                        year: 'numeric', month: 'short', day: 'numeric',
+                        hour: '2-digit', minute: '2-digit'
                     });
                 },
 

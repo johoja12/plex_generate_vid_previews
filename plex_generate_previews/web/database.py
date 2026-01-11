@@ -169,7 +169,6 @@ def create_db_and_tables():
     except Exception:
         pass
 
-    # Migration: Add multi-user priority settings to AppSettings
     try:
         with engine.connect() as connection:
             connection.execute(text("ALTER TABLE appsettings ADD COLUMN enable_multi_user_priority INTEGER DEFAULT 0"))
@@ -179,6 +178,25 @@ def create_db_and_tables():
     try:
         with engine.connect() as connection:
             connection.execute(text("ALTER TABLE appsettings ADD COLUMN priority_history_limit INTEGER DEFAULT 50"))
+    except Exception:
+        pass
+
+    # Migration: Add data rate limiting settings to AppSettings
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("ALTER TABLE appsettings ADD COLUMN data_limit_gb_per_hour REAL DEFAULT 0.0"))
+    except Exception:
+        pass
+
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("ALTER TABLE appsettings ADD COLUMN total_bytes_processed_hour BIGINT DEFAULT 0"))
+    except Exception:
+        pass
+
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("ALTER TABLE appsettings ADD COLUMN hour_start_time DATETIME"))
     except Exception:
         pass
 

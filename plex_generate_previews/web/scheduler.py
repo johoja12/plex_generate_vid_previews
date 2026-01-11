@@ -24,6 +24,7 @@ class DbProgressManager:
         # Batch updates in memory before writing to DB
         self.pending_updates = {}  # {item_key: data}
         self.update_lock = threading.Lock()
+        self.recorded_bytes = {}  # {item_key: last_recorded_bytes}
         self.last_batch_write = time.time()
         self.batch_write_interval = 5.0  # Write batches every 5 seconds (increased from 2)
 
@@ -38,6 +39,16 @@ class DbProgressManager:
 
         progress = data.get('progress_percent', 0)
         is_failed = data.get('failed', False)
+        processed_bytes = data.get('processed_bytes', 0)
+
+        # Record data usage increments
+        with self.update_lock:
+            last_bytes = self.recorded_bytes.get(item_key, 0)
+            if processed_bytes > last_bytes:
+                delta = processed_bytes - last_bytes
+                logger.debug(f"Usage delta for {item_key}: {delta} bytes (current: {processed_bytes}, last: {last_bytes})")
+                scheduler._record_processed_data(item_key, delta)
+                self.recorded_bytes[item_key] = processed_bytes
 
         # Debug log for failed items
         if is_failed:
@@ -228,6 +239,9 @@ class Scheduler:
         self.force_sync = False
         self.paused = False
         self.last_sync_time: Optional[datetime] = None # Will be loaded from DB
+        self._last_rate_limit_check = 0
+        self._rate_limited = False
+        self._rate_limit_message = ""
 
     def trigger_sync(self):
         self.force_sync = True
@@ -317,6 +331,81 @@ class Scheduler:
                 session.commit()
         except Exception as e:
             logger.error(f"Failed to persist resume state to database: {e}")
+
+    def _check_rate_limit(self) -> bool:
+        """
+        Check if we've exceeded the hourly data limit.
+        Returns True if rate limited.
+        """
+        try:
+            with Session(engine) as session:
+                settings = session.get(AppSettings, 1)
+                if not settings or not settings.data_limit_gb_per_hour or settings.data_limit_gb_per_hour <= 0:
+                    self._rate_limited = False
+                    # Clear debt if limit is disabled
+                    if settings and settings.total_bytes_processed_hour > 0:
+                        settings.total_bytes_processed_hour = 0
+                        session.add(settings)
+                        session.commit()
+                    return False
+
+                now = datetime.utcnow()
+                limit_bytes = int(settings.data_limit_gb_per_hour * 1024 * 1024 * 1024)
+                
+                # Check if an hour has passed since the current tracking period started
+                seconds_passed = (now - settings.hour_start_time).total_seconds()
+                if seconds_passed >= 3600:
+                    hours_passed = int(seconds_passed // 3600)
+                    # "Borrowing" implementation: Subtract Quota for passed hours
+                    # This carries over any excess (debt) to the next hour
+                    settings.total_bytes_processed_hour = max(0, settings.total_bytes_processed_hour - (hours_passed * limit_bytes))
+                    
+                    from datetime import timedelta
+                    settings.hour_start_time = settings.hour_start_time + timedelta(hours=hours_passed)
+                    
+                    session.add(settings)
+                    session.commit()
+                    logger.info(f"Rate limit period reset for {hours_passed} hour(s). Current debt: {settings.total_bytes_processed_hour / 1024 / 1024 / 1024:.2f} GB")
+                    
+                    # Re-evaluate after reset
+                    if settings.total_bytes_processed_hour < limit_bytes:
+                        self._rate_limited = False
+                        return False
+
+                if settings.total_bytes_processed_hour >= limit_bytes:
+                    if not self._rate_limited:
+                        wait_seconds = int(3600 - (seconds_passed % 3600))
+                        self._rate_limit_message = f"Hourly rate limit reached ({settings.data_limit_gb_per_hour} GB). Debt: {settings.total_bytes_processed_hour / 1024 / 1024 / 1024:.2f} GB. Waiting {wait_seconds}s for next hour."
+                        logger.warning(self._rate_limit_message)
+                        self._rate_limited = True
+                    return True
+
+                self._rate_limited = False
+                return False
+        except Exception as e:
+            logger.error(f"Error checking rate limit: {e}")
+            return False
+
+    def _record_processed_data(self, item_id: str, bytes_processed: int):
+        """
+        Update the hourly processed bytes count.
+        """
+        if bytes_processed <= 0:
+            return
+
+        logger.debug(f"Recording {bytes_processed} bytes for item {item_id}")
+        try:
+            with Session(engine) as session:
+                # Use a raw update to be more atomic and handle concurrency better
+                from sqlalchemy import update
+                session.execute(
+                    update(AppSettings)
+                    .where(AppSettings.id == 1)
+                    .values(total_bytes_processed_hour=AppSettings.total_bytes_processed_hour + bytes_processed)
+                )
+                session.commit()
+        except Exception as e:
+            logger.error(f"Failed to record processed data for item {item_id}: {e}")
 
     def _get_bif_path(self, bundle_hash: str) -> str:
         """Construct BIF file path from bundle hash"""
@@ -514,7 +603,7 @@ class Scheduler:
                 if sync_needed:
                     logger.info("Background sync: Starting library sync...")
                     self.sync_library()
-                    self.last_sync_time = datetime.utcnow()
+                    # last_sync_time is already updated inside sync_library()
                     self.force_sync = False
                     self.sync_wake_event.clear()  # Clear the wake event after sync
                     logger.info("Background sync: Library sync complete")
@@ -1631,6 +1720,9 @@ class Scheduler:
         if self.paused:
             return
 
+        if self._check_rate_limit():
+            return
+
         # Validate mount paths before processing
         mount_valid, missing_paths = self.validate_mount_paths()
         if not mount_valid:
@@ -1744,7 +1836,7 @@ class Scheduler:
             self.config,
             plex,
             pm,
-            stop_condition=lambda: self.paused,
+            stop_condition=lambda: self.paused or scheduler._check_rate_limit(),
             fetch_more_items=fetch_more_items,
             pause_handler=pause_handler
         )

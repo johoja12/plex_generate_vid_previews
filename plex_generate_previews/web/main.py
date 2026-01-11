@@ -147,7 +147,8 @@ async def get_settings(session: Session = Depends(get_session), user: str = Depe
             "mount_check_paths": "",
             "mount_failure_threshold": 50.0,
             "enable_multi_user_priority": False,
-            "priority_history_limit": 50
+            "priority_history_limit": 50,
+            "data_limit_gb_per_hour": 0.0
         }
     return {
         "gpu_threads": settings.gpu_threads,
@@ -160,7 +161,8 @@ async def get_settings(session: Session = Depends(get_session), user: str = Depe
         "mount_check_paths": settings.mount_check_paths if hasattr(settings, 'mount_check_paths') else "",
         "mount_failure_threshold": settings.mount_failure_threshold if hasattr(settings, 'mount_failure_threshold') else 50.0,
         "enable_multi_user_priority": settings.enable_multi_user_priority if hasattr(settings, 'enable_multi_user_priority') else False,
-        "priority_history_limit": settings.priority_history_limit if hasattr(settings, 'priority_history_limit') else 50
+        "priority_history_limit": settings.priority_history_limit if hasattr(settings, 'priority_history_limit') else 50,
+        "data_limit_gb_per_hour": settings.data_limit_gb_per_hour if hasattr(settings, 'data_limit_gb_per_hour') else 0.0
     }
 
 @app.get("/api/settings/plex-identifier")
@@ -203,6 +205,10 @@ async def update_settings(
         settings.enable_multi_user_priority = bool(payload["enable_multi_user_priority"])
     if "priority_history_limit" in payload:
         settings.priority_history_limit = int(payload["priority_history_limit"])
+
+    # Update data rate limit
+    if "data_limit_gb_per_hour" in payload:
+        settings.data_limit_gb_per_hour = float(payload["data_limit_gb_per_hour"])
 
     # Update password if provided
     if "new_password" in payload and payload["new_password"]:
@@ -857,6 +863,9 @@ async def save_config(
 # API Endpoints
 @app.get("/api/stats")
 async def get_stats(session: Session = Depends(get_session), user: str = Depends(login_required)):
+    # Expire all cached objects to ensure fresh data from database
+    session.expire_all()
+
     total = session.exec(select(func.count(MediaItem.id))).one()
     completed = session.exec(select(func.count(MediaItem.id)).where(MediaItem.status == PreviewStatus.COMPLETED)).one()
     queued = session.exec(select(func.count(MediaItem.id)).where(MediaItem.status == PreviewStatus.QUEUED)).one()
@@ -872,6 +881,25 @@ async def get_stats(session: Session = Depends(get_session), user: str = Depends
     last_sync_time = settings.last_sync_time if settings else None
     last_sync_summary = settings.last_sync_summary if settings else None
 
+    # Get rate limit info
+    limit_gb = settings.data_limit_gb_per_hour if settings else 0.0
+    processed_bytes = settings.total_bytes_processed_hour if settings else 0
+    limit_bytes = int(limit_gb * 1024 * 1024 * 1024) if limit_gb > 0 else 0
+    remaining_bytes = limit_bytes - processed_bytes if limit_gb > 0 else 0
+
+    rate_limit_info = {
+        "limit_gb": limit_gb,
+        "is_limited": scheduler._rate_limited,
+        "processed_bytes": processed_bytes,
+        "remaining_bytes": remaining_bytes,
+        "message": scheduler._rate_limit_message if scheduler._rate_limited else ""
+    }
+    
+    # Ensure is_limited is up to date
+    if rate_limit_info["limit_gb"] > 0:
+        rate_limit_info["is_limited"] = scheduler._check_rate_limit()
+        rate_limit_info["message"] = scheduler._rate_limit_message if scheduler._rate_limited else ""
+
     return {
         "total": total,
         "completed": completed,
@@ -881,7 +909,8 @@ async def get_stats(session: Session = Depends(get_session), user: str = Depends
         "failed": failed,
         "media_missing": media_missing,
         "last_sync_time": last_sync_time.isoformat() if last_sync_time else None,
-        "last_sync_summary": last_sync_summary
+        "last_sync_summary": last_sync_summary,
+        "rate_limit": rate_limit_info
     }
 
 @app.get("/api/libraries")
@@ -973,7 +1002,6 @@ async def get_items(
         if item.media_parts_info:
             try:
                 import json
-                import os
                 parts = json.loads(item.media_parts_info)
                 for idx, part in enumerate(parts):
                     # Determine part status based on processing state and BIF existence
@@ -1015,6 +1043,14 @@ async def get_items(
                     file_path = part.get('file_path', '')
                     filename = os.path.basename(file_path) if file_path else f"Part {idx + 1}"
 
+                    # Check for symlink
+                    symlink_target = None
+                    if file_path and os.path.islink(file_path):
+                        try:
+                            symlink_target = os.readlink(file_path)
+                        except OSError:
+                            pass
+
                     expanded_items.append({
                         "id": f"{item.id}_part{idx}",  # Unique ID per part
                         "item_id": item.id,  # Original item ID
@@ -1023,6 +1059,7 @@ async def get_items(
                         "media_type": item.media_type,
                         "library_name": item.library_name,
                         "file_path": part.get('file_path'),
+                        "symlink_target": symlink_target,
                         "bundle_hash": part.get('bundle_hash'),
                         "bif_path": part.get('bif_path'),
                         "status": part_status,
@@ -1058,6 +1095,13 @@ async def get_items(
                 })
         else:
             # No parts info, use item directly
+            symlink_target = None
+            if item.file_path and os.path.islink(item.file_path):
+                try:
+                    symlink_target = os.readlink(item.file_path)
+                except OSError:
+                    pass
+
             expanded_items.append({
                 "id": item.id,
                 "item_id": item.id,
@@ -1066,6 +1110,7 @@ async def get_items(
                 "media_type": item.media_type,
                 "library_name": item.library_name,
                 "file_path": item.file_path,
+                "symlink_target": symlink_target,
                 "bundle_hash": item.bundle_hash,
                 "bif_path": item.bif_path,
                 "status": item.status,

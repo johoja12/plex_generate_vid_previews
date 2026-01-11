@@ -48,6 +48,11 @@ class AppSettings(SQLModel, table=True):
     enable_multi_user_priority: bool = False  # Enable priority detection for all users on the server
     priority_history_limit: int = 50  # Number of recently watched items to check per user (default: 50)
 
+    # Data rate limiting
+    data_limit_gb_per_hour: float = Field(default=0.0) # 0.0 means no limit
+    total_bytes_processed_hour: int = Field(default=0)
+    hour_start_time: datetime = Field(default_factory=datetime.utcnow)
+
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 class MediaItem(SQLModel, table=True):

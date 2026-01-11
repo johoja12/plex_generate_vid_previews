@@ -73,6 +73,7 @@ class Worker:
         self.fps = 0
         self.q = 0
         self.size = 0
+        self.processed_bytes = 0
         self.time_str = "00:00:00.00"
         self.bitrate = 0
         
@@ -181,6 +182,7 @@ class Worker:
         self.fps = 0
         self.q = 0
         self.size = 0
+        self.processed_bytes = 0
         self.time_str = "00:00:00.00"
         self.bitrate = 0
         
@@ -336,6 +338,7 @@ class Worker:
             'fps': self.fps,
             'q': self.q,
             'size': self.size,
+            'processed_bytes': self.processed_bytes,
             'time_str': self.time_str,
             'bitrate': self.bitrate
         }
@@ -783,7 +786,7 @@ class WorkerPool:
         logger.info(f'Processing complete: {", ".join(stats_parts)}')
     
     def _update_worker_progress(self, worker, progress_percent, current_duration, total_duration, speed=None,
-                               remaining_time=None, frame=0, fps=0, q=0, size=0, time_str="00:00:00.00", bitrate=0, media_file=None, failed=False, error_message=None, avg_speed=None, bundle_hash=None):
+                               remaining_time=None, frame=0, fps=0, q=0, size=0, time_str="00:00:00.00", bitrate=0, media_file=None, failed=False, error_message=None, avg_speed=None, bundle_hash=None, input_file_size=0):
         """Update worker progress data from callback."""
         # Use thread-safe updates to prevent race conditions
         with self._progress_lock:
@@ -814,6 +817,13 @@ class WorkerPool:
             worker.fps = fps
             worker.q = q
             worker.size = size
+            
+            # Calculate processed bytes based on input file size and progress
+            if input_file_size > 0:
+                worker.processed_bytes = int((progress_percent / 100.0) * input_file_size)
+            else:
+                worker.processed_bytes = size * 1024 # Fallback to output size in bytes
+                
             worker.time_str = time_str
             worker.bitrate = bitrate
             

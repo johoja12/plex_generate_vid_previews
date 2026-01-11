@@ -951,11 +951,17 @@ def process_item(item_key: str, gpu: Optional[str], gpu_device_path: Optional[st
         if not _ensure_directories(indexes_path, tmp_path, media_file):
             continue
 
-        # Wrap progress callback to include bundle_hash
+        # Wrap progress callback to include bundle_hash and input file size
         part_progress_callback = None
         if progress_callback:
+            try:
+                file_size_bytes = os.path.getsize(media_file)
+            except OSError:
+                file_size_bytes = 0
+
             def part_progress_callback(*args, **kwargs):
                 kwargs['bundle_hash'] = bundle_hash
+                kwargs['input_file_size'] = file_size_bytes
                 return progress_callback(*args, **kwargs)
 
         # Generate images and create BIF file

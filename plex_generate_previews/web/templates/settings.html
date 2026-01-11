@@ -157,6 +157,25 @@
             </div>
         </div>
 
+        <!-- Rate Limiting -->
+        <div class="card border border-teal-900 bg-teal-900/10">
+            <h2 class="text-xl font-bold mb-4 pb-2 border-b border-teal-900 text-teal-400">Data Rate Limiting</h2>
+            <p class="text-sm text-gray-400 mb-4">Limit the amount of data processed per hour to avoid hitting Usenet provider or storage rate limits.</p>
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-gray-400 text-sm font-bold mb-2">Hourly Data Limit (GB/hr)</label>
+                    <input
+                        type="number"
+                        x-model.number="config.data_limit_gb_per_hour"
+                        min="0"
+                        step="0.1"
+                        placeholder="0.0 for unlimited"
+                        class="w-full bg-gray-700 text-white p-2 rounded border border-gray-600 focus:border-orange-500 focus:outline-none">
+                    <p class="text-xs text-gray-500 mt-1">Maximum GB of media to process per hour. Set to 0 for no limit.</p>
+                </div>
+            </div>
+        </div>
+
         <!-- Maintenance -->
         <div class="card border border-blue-900 bg-blue-900/10">
             <h2 class="text-xl font-bold mb-4 pb-2 border-b border-blue-900 text-blue-400">Maintenance</h2>
@@ -516,7 +535,8 @@
                             mount_check_paths: this.config.mount_check_paths,
                             mount_failure_threshold: this.config.mount_failure_threshold,
                             enable_multi_user_priority: this.config.enable_multi_user_priority,
-                            priority_history_limit: this.config.priority_history_limit
+                            priority_history_limit: this.config.priority_history_limit,
+                            data_limit_gb_per_hour: this.config.data_limit_gb_per_hour
                         };
 
                         const res = await fetch('/api/settings', {
