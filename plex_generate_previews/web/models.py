@@ -52,6 +52,10 @@ class AppSettings(SQLModel, table=True):
     data_limit_gb_per_hour: float = Field(default=0.0) # 0.0 means no limit
     total_bytes_processed_hour: int = Field(default=0)
     hour_start_time: datetime = Field(default_factory=datetime.utcnow)
+    rate_limit_exempt_paths: Optional[str] = None  # Comma-separated paths exempt from rate limiting (e.g., "/mnt/remote/nzbdav")
+
+    # Sync settings
+    use_database_sync: bool = True  # Use direct database queries for sync instead of Plex API (faster)
 
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 

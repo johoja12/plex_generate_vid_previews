@@ -2,6 +2,26 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Infrastructure Context
+
+**IMPORTANT**: Always read the infrastructure inventory file to understand the home lab topology:
+```
+/opt/projects/home-mon/inventory.yaml
+```
+
+This file contains the complete infrastructure layout including:
+- **Hosts**: nuc-1 (192.168.20.65), beelink (192.168.20.66), Synology (192.168.20.70), QNAP (192.168.20.80)
+- **NFS mounts and exports**: Which hosts export/mount which paths
+- **Docker containers**: What runs where and their health URLs
+- **Service stacks**: nzbdav stack on beelink (Docker + systemd services)
+- **Path mappings**: How Plex paths map to container paths via NFS
+
+Key deployment info for plex-previews:
+- Runs on **nuc-1** (Intel NUC i7-1185G7 with Iris Xe GPU for QuickSync)
+- Web UI at http://192.168.20.65:8008
+- Mounts: `/mnt/plex` (Synology), `/mnt/remote/nzbdav` (beelink), `/mnt/remote/realdebrid` (QNAP)
+- Plex config at `/mnt/plex-data` (NFS from QNAP)
+
 ## Project Overview
 
 Plex Generate Video Previews is a Python tool that generates video preview thumbnails (BIF files) for Plex Media Server with GPU acceleration. It significantly speeds up thumbnail generation compared to Plex's built-in system by leveraging hardware acceleration (NVIDIA CUDA, AMD/Intel VAAPI, Windows D3D11VA, Apple VideoToolbox) and parallel processing.
@@ -207,6 +227,20 @@ When Plex sees different paths than the tool:
 - `PLEX_LOCAL_VIDEOS_PATH_MAPPING`: Local/container path prefix (e.g., `/media`)
 
 Example: Plex sees `/server/media/movies/avatar.mkv`, container sees `/media/movies/avatar.mkv` → map `/server/media` to `/media`
+
+### Startup Wait (Delayed Mounts)
+For environments where mounts (rclone, NFS, etc.) may not be immediately available after reboot:
+- `STARTUP_WAIT_PATH`: Path to wait for before starting (e.g., `/media/videos` or the rclone mount point)
+- `STARTUP_WAIT_TIMEOUT`: Maximum seconds to wait (default: 300 = 5 minutes)
+- `STARTUP_WAIT_INTERVAL`: Seconds between path existence checks (default: 5)
+
+Example: Wait for rclone mount before processing:
+```bash
+docker run ... \
+  -e STARTUP_WAIT_PATH=/media/videos \
+  -e STARTUP_WAIT_TIMEOUT=600 \
+  plex-generate-previews
+```
 
 ## Common Issues
 

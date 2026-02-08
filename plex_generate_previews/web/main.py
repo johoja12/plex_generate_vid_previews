@@ -148,7 +148,8 @@ async def get_settings(session: Session = Depends(get_session), user: str = Depe
             "mount_failure_threshold": 50.0,
             "enable_multi_user_priority": False,
             "priority_history_limit": 50,
-            "data_limit_gb_per_hour": 0.0
+            "data_limit_gb_per_hour": 0.0,
+            "rate_limit_exempt_paths": ""
         }
     return {
         "gpu_threads": settings.gpu_threads,
@@ -162,7 +163,8 @@ async def get_settings(session: Session = Depends(get_session), user: str = Depe
         "mount_failure_threshold": settings.mount_failure_threshold if hasattr(settings, 'mount_failure_threshold') else 50.0,
         "enable_multi_user_priority": settings.enable_multi_user_priority if hasattr(settings, 'enable_multi_user_priority') else False,
         "priority_history_limit": settings.priority_history_limit if hasattr(settings, 'priority_history_limit') else 50,
-        "data_limit_gb_per_hour": settings.data_limit_gb_per_hour if hasattr(settings, 'data_limit_gb_per_hour') else 0.0
+        "data_limit_gb_per_hour": settings.data_limit_gb_per_hour if hasattr(settings, 'data_limit_gb_per_hour') else 0.0,
+        "rate_limit_exempt_paths": settings.rate_limit_exempt_paths if hasattr(settings, 'rate_limit_exempt_paths') else ""
     }
 
 @app.get("/api/settings/plex-identifier")
@@ -209,6 +211,8 @@ async def update_settings(
     # Update data rate limit
     if "data_limit_gb_per_hour" in payload:
         settings.data_limit_gb_per_hour = float(payload["data_limit_gb_per_hour"])
+    if "rate_limit_exempt_paths" in payload:
+        settings.rate_limit_exempt_paths = payload["rate_limit_exempt_paths"]
 
     # Update password if provided
     if "new_password" in payload and payload["new_password"]:
@@ -908,9 +912,10 @@ async def get_stats(session: Session = Depends(get_session), user: str = Depends
         "processing": processing,
         "failed": failed,
         "media_missing": media_missing,
-        "last_sync_time": last_sync_time.isoformat() if last_sync_time else None,
+        "last_sync_time": (last_sync_time.isoformat() + "Z") if last_sync_time else None,
         "last_sync_summary": last_sync_summary,
-        "rate_limit": rate_limit_info
+        "rate_limit": rate_limit_info,
+        "sync_in_progress": scheduler.sync_in_progress
     }
 
 @app.get("/api/libraries")
@@ -1035,7 +1040,11 @@ async def get_items(
                         if item.status == PreviewStatus.QUEUED:
                             part_status = PreviewStatus.QUEUED
                         elif item.status == PreviewStatus.MEDIA_MISSING:
-                             part_status = PreviewStatus.MEDIA_MISSING
+                            part_status = PreviewStatus.MEDIA_MISSING
+                        elif item.status in [PreviewStatus.FAILED, PreviewStatus.SLOW_FAILED]:
+                            part_status = item.status
+                            part_error = item.error_message
+                            part_speed = item.avg_speed
                         else:
                             part_status = PreviewStatus.MISSING
 
@@ -1133,6 +1142,65 @@ async def get_items(
         "limit": limit,
         "pages": (expanded_total + limit - 1) // limit if limit > 0 else 1
     }
+
+@app.get("/api/items/processing")
+async def get_processing_items(
+    session: Session = Depends(get_session),
+    user: str = Depends(login_required)
+):
+    """Get items currently being processed or queued (for the processing section on home page)."""
+    import json as json_module
+
+    # Get processing items first, then queued items
+    processing_query = select(MediaItem).where(
+        col(MediaItem.status).in_([PreviewStatus.PROCESSING, PreviewStatus.QUEUED])
+    ).order_by(
+        # Processing items first, then queued by priority and queue order
+        case(
+            (MediaItem.status == PreviewStatus.PROCESSING, 0),
+            else_=1
+        ),
+        MediaItem.is_priority.desc(),
+        MediaItem.queue_order.asc()
+    ).limit(10)  # Limit to 10 items for the UI
+
+    items = session.exec(processing_query).all()
+
+    result_items = []
+    for item in items:
+        # Get file path from media_parts_info if available
+        file_path = item.file_path
+        if item.media_parts_info:
+            try:
+                parts = json_module.loads(item.media_parts_info)
+                if parts and len(parts) > 0:
+                    file_path = parts[0].get('file_path', item.file_path)
+            except (json_module.JSONDecodeError, KeyError):
+                pass
+
+        # Resolve symlink target if file is a symlink
+        symlink_target = None
+        if file_path:
+            try:
+                if os.path.islink(file_path):
+                    symlink_target = os.readlink(file_path)
+            except (OSError, IOError):
+                pass
+
+        result_items.append({
+            "id": item.id,
+            "title": item.title,
+            "media_type": item.media_type,
+            "library_name": item.library_name,
+            "status": item.status,
+            "progress": item.progress,
+            "avg_speed": item.avg_speed,
+            "is_priority": item.is_priority,
+            "file_path": file_path,
+            "symlink_target": symlink_target
+        })
+
+    return {"items": result_items}
 
 @app.get("/api/items/all-with-hash-status")
 async def get_items_all_with_hash_status(

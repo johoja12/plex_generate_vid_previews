@@ -15,7 +15,7 @@ from ..utils import setup_working_directory, sanitize_path
 from .database import engine, get_session
 from .models import MediaItem, PreviewStatus, MediaType, AppSettings
 import os
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 class DbProgressManager:
     def __init__(self):
@@ -239,9 +239,12 @@ class Scheduler:
         self.force_sync = False
         self.paused = False
         self.last_sync_time: Optional[datetime] = None # Will be loaded from DB
+        self.sync_in_progress = False  # Track if sync is currently running
         self._last_rate_limit_check = 0
         self._rate_limited = False
         self._rate_limit_message = ""
+        self._rate_limit_exempt_paths_cache = []  # Cache for exempt paths
+        self._rate_limit_exempt_paths_cache_time = 0  # Timestamp of last cache update
 
     def trigger_sync(self):
         self.force_sync = True
@@ -359,8 +362,6 @@ class Scheduler:
                     # "Borrowing" implementation: Subtract Quota for passed hours
                     # This carries over any excess (debt) to the next hour
                     settings.total_bytes_processed_hour = max(0, settings.total_bytes_processed_hour - (hours_passed * limit_bytes))
-                    
-                    from datetime import timedelta
                     settings.hour_start_time = settings.hour_start_time + timedelta(hours=hours_passed)
                     
                     session.add(settings)
@@ -386,12 +387,119 @@ class Scheduler:
             logger.error(f"Error checking rate limit: {e}")
             return False
 
+    def _get_rate_limit_exempt_paths(self) -> list:
+        """
+        Get the list of paths exempt from rate limiting, with caching.
+        Returns a list of path prefixes that are exempt.
+        """
+        # Cache for 60 seconds to avoid frequent DB queries
+        now = time.time()
+        if now - self._rate_limit_exempt_paths_cache_time < 60 and self._rate_limit_exempt_paths_cache is not None:
+            return self._rate_limit_exempt_paths_cache
+
+        try:
+            with Session(engine) as session:
+                settings = session.get(AppSettings, 1)
+                if settings and settings.rate_limit_exempt_paths:
+                    # Parse comma-separated paths, strip whitespace
+                    paths = [p.strip() for p in settings.rate_limit_exempt_paths.split(',') if p.strip()]
+                    self._rate_limit_exempt_paths_cache = paths
+                else:
+                    self._rate_limit_exempt_paths_cache = []
+                self._rate_limit_exempt_paths_cache_time = now
+                return self._rate_limit_exempt_paths_cache
+        except Exception as e:
+            logger.error(f"Error getting rate limit exempt paths: {e}")
+            return []
+
+    def _is_path_rate_limit_exempt(self, file_path: str) -> bool:
+        """
+        Check if a file path (or its symlink target) is exempt from rate limiting.
+
+        This checks both the original path AND the fully resolved real path,
+        which handles cases where:
+        - The file itself is a symlink
+        - Any parent directory in the path is a symlink
+
+        Args:
+            file_path: The file path to check
+
+        Returns:
+            True if the path is exempt from rate limiting, False otherwise
+        """
+        if not file_path:
+            return False
+
+        exempt_paths = self._get_rate_limit_exempt_paths()
+        if not exempt_paths:
+            return False  # No exempt paths configured
+
+        # Check the file path itself
+        for exempt_path in exempt_paths:
+            if file_path.startswith(exempt_path):
+                logger.debug(f"Path {file_path} is rate limit exempt (matches {exempt_path})")
+                return True
+
+        # Always resolve the full path to handle symlinks (both file and parent directories)
+        try:
+            real_path = os.path.realpath(file_path)
+            # Only check if the resolved path is different from the original
+            if real_path != file_path:
+                for exempt_path in exempt_paths:
+                    if real_path.startswith(exempt_path):
+                        logger.debug(f"Resolved path {real_path} (from {file_path}) is rate limit exempt (matches {exempt_path})")
+                        return True
+        except (OSError, IOError) as e:
+            logger.debug(f"Could not resolve path {file_path}: {e}")
+
+        return False
+
+    def _is_item_rate_limit_exempt(self, item: MediaItem) -> bool:
+        """
+        Check if a media item is exempt from rate limiting based on its file paths.
+
+        Args:
+            item: MediaItem to check
+
+        Returns:
+            True if the item is exempt from rate limiting
+        """
+        import json
+
+        # Check all media parts for the item
+        if item.media_parts_info:
+            try:
+                parts = json.loads(item.media_parts_info)
+                for part in parts:
+                    file_path = part.get('file_path')
+                    if file_path and self._is_path_rate_limit_exempt(file_path):
+                        return True
+            except (json.JSONDecodeError, KeyError) as e:
+                logger.debug(f"Could not parse media_parts_info for item {item.id}: {e}")
+
+        # Fallback to file_path field
+        if item.file_path and self._is_path_rate_limit_exempt(item.file_path):
+            return True
+
+        return False
+
     def _record_processed_data(self, item_id: str, bytes_processed: int):
         """
         Update the hourly processed bytes count.
+        Skips recording for rate-limit exempt items.
         """
         if bytes_processed <= 0:
             return
+
+        # Check if this item is rate-limit exempt
+        try:
+            with Session(engine) as session:
+                item = session.get(MediaItem, int(item_id))
+                if item and self._is_item_rate_limit_exempt(item):
+                    logger.debug(f"Skipping data recording for rate-limit exempt item {item_id} ({item.title})")
+                    return
+        except Exception as e:
+            logger.debug(f"Could not check rate limit exemption for item {item_id}: {e}")
 
         logger.debug(f"Recording {bytes_processed} bytes for item {item_id}")
         try:
@@ -597,8 +705,13 @@ class Scheduler:
                     logger.debug(f"Could not load sync_interval from settings, using default: {e}")
 
                 # Check if sync is needed (based on sync_interval or when forced)
-                sync_needed = self.force_sync or \
-                              (time.time() - self.last_sync_time.timestamp() > sync_interval if self.last_sync_time else True)
+                # Use datetime subtraction to avoid timezone issues with .timestamp()
+                # (naive UTC datetimes compared with naive UTC datetimes)
+                if self.last_sync_time:
+                    seconds_since_sync = (datetime.utcnow() - self.last_sync_time).total_seconds()
+                    sync_needed = self.force_sync or seconds_since_sync > sync_interval
+                else:
+                    sync_needed = True
 
                 if sync_needed:
                     logger.info("Background sync: Starting library sync...")
@@ -1525,6 +1638,7 @@ class Scheduler:
 
     def sync_library(self):
         logger.info("Syncing library with Plex...")
+        self.sync_in_progress = True
         sync_start_time = time.time()
         try:
             # Step 0: Validate mount paths before syncing
@@ -1538,6 +1652,7 @@ class Scheduler:
                 if not self.paused:
                     logger.error("Auto-pausing queue due to mount failure")
                     self.pause()
+                self.sync_in_progress = False
                 return
 
             # Track sync statistics
@@ -1560,7 +1675,18 @@ class Scheduler:
             logger.info("Fetching items from Plex...")
             plex_fetch_start = time.time()
             plex = plex_server(self.config)
-            sections = get_library_sections(plex, self.config)
+
+            # Check if database-only sync is enabled
+            use_database_sync = True  # Default to True for speed
+            try:
+                with Session(engine) as settings_session:
+                    settings = settings_session.get(AppSettings, 1)
+                    if settings and hasattr(settings, 'use_database_sync'):
+                        use_database_sync = settings.use_database_sync
+            except Exception as e:
+                logger.debug(f"Could not load use_database_sync setting, defaulting to True: {e}")
+
+            sections = get_library_sections(plex, self.config, database_only=use_database_sync)
 
             # Step 2.5: Detect priority items from Plex
             priority_item_keys = self.detect_priority_items(plex)
@@ -1715,13 +1841,15 @@ class Scheduler:
             logger.info(f"Library sync complete in {total_sync_time:.2f}s. {sync_stats}")
         except Exception as e:
             logger.error(f"Sync failed: {e}")
+        finally:
+            self.sync_in_progress = False
 
     def process_queue(self):
         if self.paused:
             return
 
-        if self._check_rate_limit():
-            return
+        # Check rate limit status
+        is_rate_limited = self._check_rate_limit()
 
         # Validate mount paths before processing
         mount_valid, missing_paths = self.validate_mount_paths()
@@ -1740,7 +1868,10 @@ class Scheduler:
             batch_size = self.config.gpu_threads + self.config.cpu_threads
         else:
             batch_size = 10  # Fallback if config not loaded yet
-        
+
+        # If rate-limited, fetch more items to find exempt ones
+        fetch_limit = batch_size * 5 if is_rate_limited else batch_size
+
         with Session(engine) as session:
             # Prioritize: Status is MISSING only (not QUEUED - those are already in the worker queue)
             # Sort by:
@@ -1749,12 +1880,31 @@ class Scheduler:
             # 3. queue_order asc (Manual prioritization)
             statement = select(MediaItem).where(
                 MediaItem.status == PreviewStatus.MISSING
-            ).order_by(MediaItem.is_priority.desc(), MediaItem.updated_at.desc(), MediaItem.queue_order.asc()).limit(batch_size)
+            ).order_by(MediaItem.is_priority.desc(), MediaItem.updated_at.desc(), MediaItem.queue_order.asc()).limit(fetch_limit)
 
             items = session.exec(statement).all()
 
             if not items:
                 return
+
+            # If rate-limited, filter to only include exempt items
+            if is_rate_limited:
+                original_count = len(items)
+                exempt_items = []
+                rate_limited_items = []
+
+                for item in items:
+                    if self._is_item_rate_limit_exempt(item):
+                        exempt_items.append(item)
+                    else:
+                        rate_limited_items.append(item)
+
+                if exempt_items:
+                    logger.info(f"Rate limited: Processing {len(exempt_items)} exempt items, skipping {len(rate_limited_items)} rate-limited items")
+                    items = exempt_items[:batch_size]  # Only process up to batch_size
+                else:
+                    logger.debug(f"Rate limited: No exempt items found in {original_count} candidates. Waiting for quota reset.")
+                    return
 
             # Log the order of items being processed for debugging
             if items:
@@ -1762,7 +1912,8 @@ class Scheduler:
                 for idx, item in enumerate(items[:3]):  # Show first 3 items
                     updated_date = item.updated_at.strftime('%Y-%m-%d %H:%M') if item.updated_at else 'unknown'
                     priority_flag = " [PRIORITY]" if item.is_priority else ""
-                    logger.debug(f"  {idx+1}. {item.title} (updated: {updated_date}){priority_flag}")
+                    exempt_flag = " [EXEMPT]" if self._is_item_rate_limit_exempt(item) else ""
+                    logger.debug(f"  {idx+1}. {item.title} (updated: {updated_date}){priority_flag}{exempt_flag}")
 
             # Prepare for worker pool
             # worker_pool.process_items expects List[tuple(key, title, type)]
@@ -1772,9 +1923,9 @@ class Scheduler:
                 if item.status == PreviewStatus.MISSING:
                     item.status = PreviewStatus.QUEUED
                     session.add(item)
-                
+
                 process_list.append((str(item.id), item.title, item.media_type))
-            
+
             session.commit()
         
         if not process_list:
@@ -1794,17 +1945,31 @@ class Scheduler:
             if self.paused:
                 return []
 
+            # Check rate limit status for filtering
+            current_rate_limited = self._check_rate_limit()
+            current_fetch_limit = batch_size * 5 if current_rate_limited else batch_size
+
             with Session(engine) as session:
                 # Fetch items that are MISSING only (QUEUED items are already in the worker queue)
                 # Sort by priority first, then updated_at, then manual queue_order
                 statement = select(MediaItem).where(
                     MediaItem.status == PreviewStatus.MISSING
-                ).order_by(MediaItem.is_priority.desc(), MediaItem.updated_at.desc(), MediaItem.queue_order.asc()).limit(batch_size)
+                ).order_by(MediaItem.is_priority.desc(), MediaItem.updated_at.desc(), MediaItem.queue_order.asc()).limit(current_fetch_limit)
 
                 items = session.exec(statement).all()
 
                 if not items:
                     return []
+
+                # If rate-limited, filter to only include exempt items
+                if current_rate_limited:
+                    exempt_items = [item for item in items if self._is_item_rate_limit_exempt(item)]
+                    if exempt_items:
+                        logger.debug(f"Rate limited: Fetching {len(exempt_items)} exempt items out of {len(items)} candidates")
+                        items = exempt_items[:batch_size]
+                    else:
+                        logger.debug(f"Rate limited: No exempt items found in {len(items)} candidates")
+                        return []
 
                 # Mark items as QUEUED and prepare for processing
                 new_items = []
@@ -1830,13 +1995,21 @@ class Scheduler:
                 logger.error("Please check your Plex server status and network connectivity")
                 logger.error("Resume processing from the web interface once Plex is accessible")
 
+        # Stop condition: Only stop when paused (rate limit is handled by filtering exempt items)
+        def should_stop():
+            if self.paused:
+                return True
+            # When rate-limited, we continue but only process exempt items
+            # The actual filtering happens in fetch_more_items
+            return False
+
         # Run processing with dynamic queue refilling
         self.worker_pool.process_items(
             process_list,
             self.config,
             plex,
             pm,
-            stop_condition=lambda: self.paused or scheduler._check_rate_limit(),
+            stop_condition=should_stop,
             fetch_more_items=fetch_more_items,
             pause_handler=pause_handler
         )

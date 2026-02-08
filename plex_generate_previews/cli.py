@@ -10,6 +10,7 @@ import sys
 import shutil
 import signal
 import argparse
+import time
 from loguru import logger
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, MofNCompleteColumn, ProgressColumn, BarColumn, TextColumn, TimeElapsedColumn
@@ -19,7 +20,7 @@ from rich.text import Text
 
 from .config import Config, load_config
 from .gpu_detection import detect_all_gpus, format_gpu_info
-from .plex_client import plex_server, get_library_sections
+from .plex_client import plex_server, get_library_sections, get_library_sections_from_database
 from .worker import WorkerPool
 from .utils import calculate_title_width, setup_working_directory as create_working_directory, is_windows
 from .version_check import check_for_updates
@@ -176,7 +177,15 @@ def parse_arguments() -> argparse.Namespace:
     
     # Logging
     parser.add_argument('--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'debug', 'info', 'warning', 'error'], help='Logging level (default: INFO)')
-        
+
+    # Startup wait options (for delayed mounts like rclone)
+    parser.add_argument('--startup-wait-path', help='Wait for this path to exist before starting (useful for delayed mounts)')
+    parser.add_argument('--startup-wait-timeout', type=int, help='Maximum seconds to wait for startup path (default: 300)')
+    parser.add_argument('--startup-wait-interval', type=int, help='Seconds between path checks (default: 5)')
+
+    # Database-only mode
+    parser.add_argument('--database-only', action='store_true', help='Query Plex SQLite database directly instead of API (useful when Plex API is returning errors)')
+
     return parser.parse_args()
 
 
@@ -188,6 +197,79 @@ def signal_handler(signum, frame):
     app_state.cleanup()
     
     sys.exit(0)
+
+
+def wait_for_startup_path(args) -> bool:
+    """
+    Wait for startup path to exist before proceeding.
+
+    This is useful when running in environments where mounts (rclone, NFS, etc.)
+    may not be immediately available after a reboot.
+
+    Args:
+        args: Parsed CLI arguments
+
+    Returns:
+        True if path exists or no wait configured, False if timeout exceeded
+    """
+    # Get wait path from args or environment
+    wait_path = getattr(args, 'startup_wait_path', None) or os.environ.get('STARTUP_WAIT_PATH', '')
+
+    if not wait_path:
+        return True
+
+    # Get timeout and interval from args or environment
+    timeout = getattr(args, 'startup_wait_timeout', None)
+    if timeout is None:
+        timeout = int(os.environ.get('STARTUP_WAIT_TIMEOUT', '300'))
+
+    interval = getattr(args, 'startup_wait_interval', None)
+    if interval is None:
+        interval = int(os.environ.get('STARTUP_WAIT_INTERVAL', '5'))
+
+    # Resolve symlinks in the wait path to check actual target
+    # This handles cases where the path is a symlink to a mounted directory
+    check_path = wait_path
+    if os.path.islink(wait_path):
+        try:
+            check_path = os.path.realpath(wait_path)
+            logger.debug(f"Startup wait path is a symlink, resolved to: {check_path}")
+        except (OSError, ValueError):
+            # If we can't resolve, use the original path
+            check_path = wait_path
+
+    logger.info(f"Waiting for startup path to exist: {wait_path}")
+    if check_path != wait_path:
+        logger.info(f"  (symlink target: {check_path})")
+    logger.info(f"  Timeout: {timeout}s, Check interval: {interval}s")
+
+    start_time = time.time()
+    last_log_time = start_time
+
+    while True:
+        # Check if path exists
+        if os.path.exists(check_path):
+            elapsed = time.time() - start_time
+            logger.info(f"Startup path is now available after {elapsed:.1f}s: {wait_path}")
+            return True
+
+        # Check timeout
+        elapsed = time.time() - start_time
+        if elapsed >= timeout:
+            logger.error(f"Timeout waiting for startup path after {timeout}s: {wait_path}")
+            logger.error("The path does not exist. Please check:")
+            logger.error("  - Mount service (rclone, NFS, etc.) is configured correctly")
+            logger.error("  - Mount dependencies are set up in your init system")
+            logger.error("  - The path is correct")
+            return False
+
+        # Log progress every 30 seconds
+        if time.time() - last_log_time >= 30:
+            remaining = timeout - elapsed
+            logger.info(f"Still waiting for startup path... ({elapsed:.0f}s elapsed, {remaining:.0f}s remaining)")
+            last_log_time = time.time()
+
+        time.sleep(interval)
 
 
 def list_gpus() -> None:
@@ -242,7 +324,11 @@ def setup_application() -> tuple:
     if args.list_gpus:
         list_gpus()
         return None, None
-    
+
+    # Wait for startup path if configured (for delayed mounts like rclone)
+    if not wait_for_startup_path(args):
+        sys.exit(1)
+
     logger.info('This project has been completely rewritten for better performance and reliability.')
     logger.info('Please report any issues at https://github.com/stevezau/plex_generate_vid_previews/issues')
 
@@ -437,79 +523,101 @@ class RichProgressManager:
 def run_processing(config, selected_gpus):
     """Run the main processing workflow."""
     try:
-        # Get Plex server
-        plex = plex_server(config)
-        
+        # Get Plex server (only needed if not in database-only mode)
+        plex = None
+        if not config.database_only:
+            plex = plex_server(config)
+        else:
+            logger.info("Running in database-only mode - querying Plex SQLite database directly")
+
         # Calculate title width for display formatting
         title_max_width = calculate_title_width()
-        
+
         # Create worker pool
         worker_pool = WorkerPool(
             gpu_workers=config.gpu_threads,
             cpu_workers=config.cpu_threads,
             selected_gpus=selected_gpus
         )
-        
+
         # Process all library sections
         total_processed = 0
-        
+
         # Create progress displays
         main_progress, worker_progress, query_progress = create_progress_displays()
-        
+
         # Create a dynamic group that can switch between query and processing displays
         class DynamicGroup:
             def __init__(self):
                 self.current_group = None
-            
+
             def set_query_mode(self):
                 self.current_group = Group(query_progress)
-            
+
             def set_processing_mode(self):
                 self.current_group = Group(main_progress, worker_progress)
-            
+
             def __rich_console__(self, console, options):
                 if self.current_group:
                     yield from self.current_group.__rich_console__(console, options)
-        
+
         dynamic_group = DynamicGroup()
-        
+
         with Live(dynamic_group, console=console, refresh_per_second=20):
             # Start in query mode
             dynamic_group.set_query_mode()
             query_task = query_progress.add_task("Querying library...", total=1, completed=0)
-            
-            # Get the generator for library sections
-            library_sections = get_library_sections(plex, config)
-            
+
+            # Get library sections - use database or API based on config
+            if config.database_only:
+                # Database-only mode: query SQLite directly
+                library_sections = get_library_sections_from_database(
+                    config.plex_config_folder,
+                    config.plex_libraries,
+                    config.sort_by
+                )
+                # Convert to iterator of (section_name, media_items) tuples
+                library_sections_iter = iter(library_sections)
+            else:
+                # Normal mode: use Plex API
+                library_sections_iter = get_library_sections(plex, config)
+
             # Process all library sections
-            for section, media_items in library_sections:
+            for section_data in library_sections_iter:
+                # Handle both API mode (section object, items) and database mode (section_name, items)
+                if config.database_only:
+                    section_name, media_items = section_data
+                else:
+                    section, media_items = section_data
+                    section_name = section.title
+
                 if not media_items:
-                    logger.info(f"No media items found in library '{section.title}', skipping")
+                    logger.info(f"No media items found in library '{section_name}', skipping")
                     continue
-                
+
                 # Switch to processing mode
                 dynamic_group.set_processing_mode()
                 query_progress.remove_task(query_task)
-                
-                main_task = main_progress.add_task(f"Processing {section.title}", total=len(media_items))
-                
+
+                main_task = main_progress.add_task(f"Processing {section_name}", total=len(media_items))
+
                 # Create progress manager
                 progress_manager = RichProgressManager(main_progress, worker_progress, main_task)
-                
+
                 # Process items in this section with worker progress
-                worker_pool.process_items(media_items, config, plex, progress_manager, title_max_width, library_name=section.title)
+                worker_pool.process_items(media_items, config, plex, progress_manager, title_max_width, library_name=section_name)
                 total_processed += len(media_items)
-                
+
                 # Remove completed task
                 main_progress.remove_task(main_task)
-                
+
                 # Switch back to query mode for next library
                 dynamic_group.set_query_mode()
                 query_task = query_progress.add_task("Querying library...", total=1, completed=0)
-            
+
             # Remove final query task
             query_progress.remove_task(query_task)
-        
+
         logger.info(f'Successfully processed {total_processed} media items across all libraries')
         
     except KeyboardInterrupt:

@@ -12,6 +12,7 @@ import xml.etree.ElementTree
 import requests
 import urllib3
 import sqlite3
+from datetime import datetime
 from typing import Optional
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -365,6 +366,154 @@ def get_hash_from_database(plex_config_folder: str, file_path: str) -> str:
         logger.error(f"Unexpected error querying database for {file_path}: {type(e).__name__}: {e}")
         return None
 
+def _convert_timestamp_to_datetime(timestamp):
+    """Convert a Unix timestamp (integer) to a datetime object.
+
+    Handles None values and already-converted datetime objects gracefully.
+    """
+    if timestamp is None:
+        return None
+    if isinstance(timestamp, datetime):
+        return timestamp
+    try:
+        return datetime.fromtimestamp(timestamp)
+    except (TypeError, ValueError, OSError):
+        return None
+
+
+def get_library_sections_from_database(plex_config_folder: str, plex_libraries: list[str] = None,
+                                        sort_by: str = None) -> list:
+    """
+    Query library sections and media items directly from the Plex SQLite database.
+
+    This is a fallback when the Plex API is unavailable (returning 500 errors).
+    It queries the database directly to get all movies and episodes.
+
+    Args:
+        plex_config_folder: Path to Plex config folder
+        plex_libraries: Optional list of library names to filter (lowercase)
+        sort_by: Optional sort order ('newest' or 'oldest')
+
+    Returns:
+        list: List of tuples (section_title, media_items) where media_items is a list of
+              (rating_key, title, media_type, bundle_hash, added_at) tuples
+    """
+    db_path = os.path.join(plex_config_folder, 'Plug-in Support', 'Databases',
+                           'com.plexapp.plugins.library.db')
+
+    if not os.path.exists(db_path):
+        logger.error(f"Plex database not found at: {db_path}")
+        return []
+
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # Get library sections
+        sections_query = """
+            SELECT id, name, section_type
+            FROM library_sections
+            WHERE section_type IN (1, 2)  -- 1=movie, 2=show
+        """
+        cursor.execute(sections_query)
+        sections = cursor.fetchall()
+
+        results = []
+
+        for section in sections:
+            section_id = section['id']
+            section_name = section['name']
+            section_type = section['section_type']
+
+            # Skip if not in configured libraries
+            if plex_libraries and section_name.lower() not in plex_libraries:
+                logger.info(f"Skipping library '{section_name}' as it's not in the configured libraries list")
+                continue
+
+            logger.info(f"Getting media files from library '{section_name}' (database mode)...")
+
+            if section_type == 1:  # Movies
+                # Determine sort order for movies (uses 'mi' alias)
+                order_clause = "ORDER BY mi.added_at DESC"  # Default: newest first
+                if sort_by == 'oldest':
+                    order_clause = "ORDER BY mi.added_at ASC"
+                # Query movies with their bundle hashes
+                query = f"""
+                    SELECT mi.id as rating_key, mi.title, mi.added_at, mp.hash as bundle_hash
+                    FROM metadata_items mi
+                    JOIN media_items mei ON mei.metadata_item_id = mi.id
+                    JOIN media_parts mp ON mp.media_item_id = mei.id
+                    WHERE mi.library_section_id = ?
+                    AND mi.metadata_type = 1  -- Movie
+                    GROUP BY mi.id
+                    {order_clause}
+                """
+                cursor.execute(query, (section_id,))
+                rows = cursor.fetchall()
+
+                media_items = [
+                    (row['rating_key'], row['title'], 'movie', row['bundle_hash'],
+                     _convert_timestamp_to_datetime(row['added_at']))
+                    for row in rows
+                ]
+
+            elif section_type == 2:  # TV Shows
+                # Determine sort order for episodes (uses 'ep' alias)
+                order_clause = "ORDER BY ep.added_at DESC"  # Default: newest first
+                if sort_by == 'oldest':
+                    order_clause = "ORDER BY ep.added_at ASC"
+                # Query episodes with show title formatted as "Show S01E01"
+                # Note: season number is stored in season.index, not ep.parent_index
+                query = f"""
+                    SELECT
+                        ep.id as rating_key,
+                        show.title as show_title,
+                        season.'index' as season_num,
+                        ep.'index' as episode_num,
+                        ep.added_at,
+                        mp.hash as bundle_hash,
+                        mp.file as file_path
+                    FROM metadata_items ep
+                    JOIN metadata_items season ON ep.parent_id = season.id
+                    JOIN metadata_items show ON season.parent_id = show.id
+                    JOIN media_items mei ON mei.metadata_item_id = ep.id
+                    JOIN media_parts mp ON mp.media_item_id = mei.id
+                    WHERE ep.library_section_id = ?
+                    AND ep.metadata_type = 4  -- Episode
+                    GROUP BY ep.id  -- One row per episode (multiple files handled via media_parts_info)
+                    {order_clause}
+                """
+                cursor.execute(query, (section_id,))
+                rows = cursor.fetchall()
+
+                media_items = []
+                for row in rows:
+                    # Format as "Show Title S01E01"
+                    season_num = row['season_num'] or 0
+                    episode_num = row['episode_num'] or 0
+                    formatted_title = f"{row['show_title']} S{season_num:02d}E{episode_num:02d}"
+                    media_items.append(
+                        (row['rating_key'], formatted_title, 'episode', row['bundle_hash'],
+                         _convert_timestamp_to_datetime(row['added_at']))
+                    )
+            else:
+                continue
+
+            logger.info(f"Retrieved {len(media_items)} media files from library '{section_name}' (database mode)")
+            results.append((section_name, media_items))
+
+        conn.close()
+        return results
+
+    except sqlite3.Error as e:
+        logger.error(f"Database error while querying library sections: {e}")
+        return []
+    except Exception as e:
+        logger.error(f"Unexpected error querying library sections: {type(e).__name__}: {e}")
+        return []
+
+
 def get_watch_history_from_database(plex_config_folder: str, limit_per_user: int = 50) -> dict:
     """
     Query watch history for all users directly from the Plex SQLite database.
@@ -434,34 +583,69 @@ def get_watch_history_from_database(plex_config_folder: str, limit_per_user: int
         return {}
 
 
-def get_library_sections(plex, config: Config):
+def get_library_sections(plex, config: Config, database_only: bool = False):
     """
     Get all library sections from Plex server.
-    
+
+    Automatically falls back to querying the SQLite database directly if the
+    Plex API returns errors (e.g., 500 errors).
+
     Args:
         plex: Plex server instance
         config: Configuration object
-        
+        database_only: If True, skip API and query database directly (faster)
+
     Yields:
         tuple: (section, media_items) for each library
     """
     import time
-    
+
+    # Create a simple section-like object for compatibility
+    class DatabaseSection:
+        def __init__(self, title):
+            self.title = title
+
+    # If database_only mode is enabled, skip API entirely
+    if database_only:
+        logger.info("Using database-only mode for library sync (faster)...")
+        db_results = get_library_sections_from_database(
+            config.plex_config_folder,
+            config.plex_libraries,
+            config.sort_by
+        )
+        if db_results:
+            for section_name, media_items in db_results:
+                yield DatabaseSection(section_name), media_items
+        else:
+            logger.error("Database query failed. Cannot proceed without library access.")
+        return
+
     # Step 1: Get all library sections (1 API call)
     logger.info("Getting all Plex library sections...")
     start_time = time.time()
-    
+
     try:
         sections = retry_plex_call(plex.library.sections)
     except (requests.exceptions.RequestException, http.client.BadStatusLine, xml.etree.ElementTree.ParseError) as e:
-        logger.error(f"Failed to get Plex library sections after retries: {e}")
-        logger.error(f"Exception type: {type(e).__name__}")
-        logger.error("Cannot proceed without library access. Please check your Plex server status.")
+        logger.warning(f"Failed to get Plex library sections via API: {e}")
+        logger.info("Falling back to database-only mode...")
+
+        # Fall back to database method
+        db_results = get_library_sections_from_database(
+            config.plex_config_folder,
+            config.plex_libraries,
+            config.sort_by
+        )
+        if db_results:
+            for section_name, media_items in db_results:
+                yield DatabaseSection(section_name), media_items
+        else:
+            logger.error("Database fallback also failed. Cannot proceed without library access.")
         return
-    
+
     sections_time = time.time() - start_time
     logger.info(f"Retrieved {len(sections)} library sections in {sections_time:.2f} seconds")
-    
+
     # Step 2: Filter and process each library
     for section in sections:
         # Skip libraries that aren't in the PLEX_LIBRARIES list if it's not empty
@@ -506,9 +690,22 @@ def get_library_sections(plex, config: Config):
                 logger.info('Skipping library {} as \'{}\' is unsupported'.format(section.title, section.METADATA_TYPE))
                 continue
         except (requests.exceptions.RequestException, http.client.BadStatusLine, xml.etree.ElementTree.ParseError) as e:
-            logger.error(f"Failed to search library '{section.title}' after retries: {e}")
-            logger.error(f"Exception type: {type(e).__name__}")
-            logger.warning(f"Skipping library '{section.title}' due to error")
+            logger.warning(f"Failed to search library '{section.title}' via API: {e}")
+            logger.info(f"Falling back to database for library '{section.title}'...")
+
+            # Fall back to database for this specific library
+            db_results = get_library_sections_from_database(
+                config.plex_config_folder,
+                [section.title.lower()],  # Only query this library
+                config.sort_by
+            )
+            if db_results:
+                for section_name, media_items in db_results:
+                    library_time = time.time() - library_start_time
+                    logger.info(f"Retrieved {len(media_items)} media files from library '{section_name}' via database in {library_time:.2f} seconds")
+                    yield section, media_items
+            else:
+                logger.error(f"Database fallback failed for library '{section.title}'. Skipping.")
             continue
 
         library_time = time.time() - library_start_time

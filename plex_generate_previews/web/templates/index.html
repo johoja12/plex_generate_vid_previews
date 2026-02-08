@@ -17,8 +17,8 @@
             top: 1rem;
             right: 1rem;
             z-index: 9999;
-            min-width: 300px;
-            max-width: 500px;
+            min-width: 200px;
+            max-width: calc(100vw - 2rem);
             animation: slideIn 0.3s ease-out;
         }
 
@@ -47,9 +47,18 @@
         .toast.hiding {
             animation: slideOut 0.3s ease-in;
         }
+
+        /* Mobile table as cards */
+        @media (max-width: 767px) {
+            .mobile-cards table,
+            .mobile-cards thead { display: none; }
+        }
+        @media (min-width: 768px) {
+            .mobile-card-view { display: none !important; }
+        }
     </style>
 </head>
-<body class="container mx-auto p-6" x-data="dashboard()">
+<body class="container mx-auto px-3 py-4 sm:p-6" x-data="dashboard()">
     <!-- Toast Notifications Container -->
     <div class="fixed top-4 right-4 z-50 space-y-2">
         <template x-for="toast in toasts" :key="toast.id">
@@ -85,31 +94,31 @@
 
     <!-- Confirmation Dialog -->
     <div x-show="confirmDialog.show"
-         class="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center"
+         class="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4"
          x-cloak
          @click.self="confirmDialog.show = false">
-        <div class="bg-gray-800 rounded-lg p-6 max-w-md w-full mx-4 shadow-xl">
-            <h3 class="text-xl font-bold text-white mb-4" x-text="confirmDialog.title"></h3>
-            <p class="text-gray-300 mb-6" x-text="confirmDialog.message"></p>
-            <div class="flex justify-end space-x-3">
+        <div class="bg-gray-800 rounded-lg p-4 sm:p-6 max-w-md w-full shadow-xl">
+            <h3 class="text-lg sm:text-xl font-bold text-white mb-3 sm:mb-4" x-text="confirmDialog.title"></h3>
+            <p class="text-gray-300 mb-4 sm:mb-6 text-sm sm:text-base" x-text="confirmDialog.message"></p>
+            <div class="flex justify-end gap-2 sm:gap-3">
                 <button @click="confirmDialog.show = false; confirmDialog.onCancel()"
-                        class="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded">
+                        class="px-3 sm:px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded text-sm">
                     Cancel
                 </button>
                 <button @click="confirmDialog.show = false; confirmDialog.onConfirm()"
-                        class="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded font-bold">
+                        class="px-3 sm:px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded font-bold text-sm">
                     Confirm
                 </button>
             </div>
         </div>
     </div>
 
-    <nav class="flex justify-between items-center mb-8">
-        <h1 class="text-2xl font-bold text-orange-500">Plex Preview Generator</h1>
-        <div>
-            <span class="mr-4 text-gray-400">User: {{ user }}</span>
-            <a href="/settings" class="bg-gray-700 hover:bg-gray-600 text-white px-4 py-2 rounded text-sm mr-2">Settings</a>
-            <a href="/logout" class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded text-sm">Logout</a>
+    <nav class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-8">
+        <h1 class="text-xl sm:text-2xl font-bold text-orange-500">Plex Preview Generator</h1>
+        <div class="flex flex-wrap items-center gap-2">
+            <span class="text-gray-400 text-sm">User: {{ user }}</span>
+            <a href="/settings" class="bg-gray-700 hover:bg-gray-600 text-white px-3 py-1.5 sm:px-4 sm:py-2 rounded text-sm">Settings</a>
+            <a href="/logout" class="bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 sm:px-4 sm:py-2 rounded text-sm">Logout</a>
         </div>
     </nav>
 
@@ -132,78 +141,94 @@
             </div>
         </div>
         
-        <div class="flex space-x-8 text-center md:text-right">
+        <div class="flex gap-4 sm:gap-8 text-center md:text-right">
             <div>
-                <p class="text-xs uppercase font-bold" :class="stats.rate_limit.is_limited ? 'text-teal-400' : 'text-gray-500'">Quota Remaining</p>
-                <p class="text-lg font-mono font-bold" 
+                <p class="text-[10px] sm:text-xs uppercase font-bold" :class="stats.rate_limit.is_limited ? 'text-teal-400' : 'text-gray-500'">Remaining</p>
+                <p class="text-sm sm:text-lg font-mono font-bold"
                    :class="stats.rate_limit.remaining_bytes < 0 ? 'text-red-400' : (stats.rate_limit.is_limited ? 'text-teal-300' : 'text-green-400')"
                    x-text="(stats.rate_limit.remaining_bytes / 1024 / 1024 / 1024).toFixed(2) + ' GB'">
                 </p>
             </div>
             <div>
-                <p class="text-xs uppercase font-bold" :class="stats.rate_limit.is_limited ? 'text-teal-400' : 'text-gray-500'">Usage</p>
-                <p class="text-lg font-mono" x-text="(stats.rate_limit.processed_bytes / 1024 / 1024 / 1024).toFixed(2) + ' / ' + stats.rate_limit.limit_gb + ' GB'"></p>
+                <p class="text-[10px] sm:text-xs uppercase font-bold" :class="stats.rate_limit.is_limited ? 'text-teal-400' : 'text-gray-500'">Usage</p>
+                <p class="text-sm sm:text-lg font-mono" x-text="(stats.rate_limit.processed_bytes / 1024 / 1024 / 1024).toFixed(2) + ' / ' + stats.rate_limit.limit_gb + ' GB'"></p>
             </div>
         </div>
     </div>
 
     <!-- Stats Grid -->
-    <div class="grid grid-cols-1 md:grid-cols-7 gap-4 mb-8">
-        <div class="card border-l-4 border-blue-500">
-            <h3 class="text-gray-400 text-sm">Total Items</h3>
-            <p class="text-2xl font-bold" x-text="stats.total">0</p>
+    <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2 sm:gap-4 mb-8">
+        <div class="card border-l-4 border-blue-500 p-3 sm:p-4">
+            <h3 class="text-gray-400 text-xs sm:text-sm">Total</h3>
+            <p class="text-xl sm:text-2xl font-bold" x-text="stats.total">0</p>
         </div>
-        <div class="card border-l-4 border-green-500">
-            <h3 class="text-gray-400 text-sm">Completed</h3>
-            <p class="text-2xl font-bold" x-text="stats.completed">0</p>
+        <div class="card border-l-4 border-green-500 p-3 sm:p-4">
+            <h3 class="text-gray-400 text-xs sm:text-sm">Completed</h3>
+            <p class="text-xl sm:text-2xl font-bold" x-text="stats.completed">0</p>
         </div>
-        <div class="card border-l-4 border-yellow-500">
-            <h3 class="text-gray-400 text-sm">Processing</h3>
-            <p class="text-2xl font-bold" x-text="stats.processing">0</p>
+        <div class="card border-l-4 border-yellow-500 p-3 sm:p-4">
+            <h3 class="text-gray-400 text-xs sm:text-sm">Processing</h3>
+            <p class="text-xl sm:text-2xl font-bold" x-text="stats.processing">0</p>
         </div>
-        <div class="card border-l-4 border-orange-500">
-            <h3 class="text-gray-400 text-sm">Queued</h3>
-            <p class="text-2xl font-bold" x-text="stats.queued">0</p>
+        <div class="card border-l-4 border-orange-500 p-3 sm:p-4">
+            <h3 class="text-gray-400 text-xs sm:text-sm">Queued</h3>
+            <p class="text-xl sm:text-2xl font-bold" x-text="stats.queued">0</p>
         </div>
-        <div class="card border-l-4 border-red-500">
-            <h3 class="text-gray-400 text-sm">Missing</h3>
-            <p class="text-2xl font-bold" x-text="stats.missing">0</p>
+        <div class="card border-l-4 border-red-500 p-3 sm:p-4">
+            <h3 class="text-gray-400 text-xs sm:text-sm">Missing</h3>
+            <p class="text-xl sm:text-2xl font-bold" x-text="stats.missing">0</p>
         </div>
-        <div class="card border-l-4 border-red-700">
-            <h3 class="text-gray-400 text-sm">Failed</h3>
-            <p class="text-2xl font-bold" x-text="stats.failed">0</p>
+        <div class="card border-l-4 border-red-700 p-3 sm:p-4">
+            <h3 class="text-gray-400 text-xs sm:text-sm">Failed</h3>
+            <p class="text-xl sm:text-2xl font-bold" x-text="stats.failed">0</p>
         </div>
-        <div class="card border-l-4 border-purple-700">
-            <h3 class="text-gray-400 text-sm">Media Missing</h3>
-            <p class="text-2xl font-bold" x-text="stats.media_missing">0</p>
+        <div class="card border-l-4 border-purple-700 p-3 sm:p-4 col-span-2 sm:col-span-1">
+            <h3 class="text-gray-400 text-xs sm:text-sm">Media Missing</h3>
+            <p class="text-xl sm:text-2xl font-bold" x-text="stats.media_missing">0</p>
         </div>
     </div>
 
     <!-- Actions -->
-    <div class="mb-6 flex flex-wrap items-center gap-4">
-        <button @click="togglePause" class="px-4 py-2 rounded text-white font-bold transition" :class="paused ? 'bg-green-600 hover:bg-green-700' : 'bg-yellow-600 hover:bg-yellow-700'">
-            <span x-text="paused ? '▶ Resume Queue' : '⏸ Pause Queue'"></span>
-        </button>
-        <button @click="triggerSync" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded">Force Sync</button>
-        <button @click="fetchItems" class="bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded">Refresh List</button>
+    <div class="mb-6 flex flex-col sm:flex-row flex-wrap items-stretch sm:items-center gap-2 sm:gap-4">
+        <div class="flex flex-wrap gap-2">
+            <button @click="togglePause" class="flex-1 sm:flex-none px-3 py-2 rounded text-white font-bold transition text-sm" :class="paused ? 'bg-green-600 hover:bg-green-700' : 'bg-yellow-600 hover:bg-yellow-700'">
+                <span x-text="paused ? '▶ Resume' : '⏸ Pause'"></span>
+            </button>
+            <button @click="triggerSync" class="flex-1 sm:flex-none bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded text-sm">Sync</button>
+            <button @click="fetchItems" class="flex-1 sm:flex-none bg-gray-600 hover:bg-gray-700 text-white px-3 py-2 rounded text-sm">Refresh</button>
+        </div>
 
         <!-- Last Sync Time -->
-        <div class="ml-auto flex flex-col items-end text-sm text-gray-400">
+        <div class="sm:ml-auto flex flex-col items-start sm:items-end text-xs sm:text-sm text-gray-400 mt-2 sm:mt-0">
             <div class="flex items-center">
-                <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                </svg>
-                <span>Last sync: </span>
-                <span class="ml-1 text-gray-300 font-medium" x-text="lastSyncAgo || 'Never'"></span>
+                <!-- Syncing indicator -->
+                <template x-if="syncInProgress">
+                    <div class="flex items-center text-blue-400">
+                        <svg class="w-4 h-4 mr-2 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                        </svg>
+                        <span class="font-medium">Syncing...</span>
+                    </div>
+                </template>
+                <!-- Normal last sync display -->
+                <template x-if="!syncInProgress">
+                    <div class="flex items-center">
+                        <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        </svg>
+                        <span>Sync: </span>
+                        <span class="ml-1 text-gray-300 font-medium" x-text="lastSyncAgo || 'Never'"></span>
+                    </div>
+                </template>
             </div>
-            <div x-show="lastSyncSummary" class="mt-1 text-xs text-gray-500" x-html="lastSyncSummary"></div>
+            <div x-show="lastSyncSummary && !syncInProgress" class="mt-1 text-xs text-gray-500" x-html="lastSyncSummary"></div>
         </div>
     </div>
 
     <!-- Library Selector -->
-    <div class="mb-6">
-        <label for="library-select" class="block text-gray-400 text-sm font-bold mb-2">Select Library:</label>
-        <select id="library-select" x-model="selectedLibrary" @change="page=1; fetchItems()" class="w-full md:w-1/3 bg-gray-700 text-white p-2 rounded border border-gray-600 focus:border-orange-500 focus:outline-none">
+    <div class="mb-4 sm:mb-6">
+        <label for="library-select" class="block text-gray-400 text-xs sm:text-sm font-bold mb-1.5 sm:mb-2">Library:</label>
+        <select id="library-select" x-model="selectedLibrary" @change="page=1; fetchItems()" class="w-full sm:w-1/2 md:w-1/3 bg-gray-700 text-white p-2 rounded border border-gray-600 focus:border-orange-500 focus:outline-none text-sm">
             <option value="">All Libraries</option>
             <template x-for="library in libraries" :key="library">
                 <option :value="library" x-text="library"></option>
@@ -211,34 +236,103 @@
         </select>
     </div>
 
+    <!-- Currently Processing Section -->
+    <div x-show="processingItems.length > 0" class="card mb-6 border border-yellow-600/30 p-3 sm:p-6" x-cloak>
+        <div class="flex justify-between items-center mb-3 sm:mb-4">
+            <h2 class="text-base sm:text-xl font-bold flex items-center">
+                <span class="animate-pulse mr-2">⚡</span>
+                Processing
+                <span class="ml-2 text-xs sm:text-sm font-normal text-gray-400">(<span x-text="processingItems.length"></span>)</span>
+            </h2>
+        </div>
+        <div class="space-y-2">
+            <template x-for="item in processingItems" :key="item.id">
+                <div class="bg-gray-800 rounded-lg p-2 sm:p-3"
+                     :class="{'border-l-4 border-yellow-500': item.status === 'processing', 'border-l-4 border-orange-500': item.status === 'queued'}">
+                    <!-- Mobile: stacked layout, Desktop: flex row -->
+                    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                        <div class="flex-1 min-w-0">
+                            <div class="flex items-center gap-1.5 sm:gap-2 flex-wrap">
+                                <template x-if="item.is_priority">
+                                    <span class="text-orange-400 text-xs sm:text-sm" title="Priority Item">⭐</span>
+                                </template>
+                                <template x-if="plexClientIdentifier">
+                                    <a :href="plexWebUrl(item.id)" target="_blank" class="font-medium hover:text-orange-400 underline text-sm sm:text-base truncate max-w-[200px] sm:max-w-none" x-text="item.title"></a>
+                                </template>
+                                <template x-if="!plexClientIdentifier">
+                                    <span class="font-medium text-sm sm:text-base truncate max-w-[200px] sm:max-w-none" x-text="item.title"></span>
+                                </template>
+                                <span class="hidden sm:inline text-xs text-gray-500 capitalize" x-text="item.media_type"></span>
+                                <span class="hidden sm:inline text-xs text-gray-600">•</span>
+                                <span class="hidden sm:inline text-xs text-gray-500" x-text="item.library_name"></span>
+                            </div>
+                            <div x-show="item.symlink_target" class="hidden sm:block text-[10px] text-blue-400/70 font-mono truncate mt-0.5" x-text="item.symlink_target" :title="item.symlink_target"></div>
+                        </div>
+                        <!-- Progress row on mobile -->
+                        <div class="flex items-center gap-2 sm:gap-4">
+                            <!-- Status Badge -->
+                            <span :class="{
+                                'bg-yellow-900/50 text-yellow-300': item.status === 'processing',
+                                'bg-orange-900/50 text-orange-300': item.status === 'queued'
+                            }" class="px-1.5 sm:px-2 py-0.5 sm:py-1 rounded text-[10px] sm:text-xs font-bold uppercase" x-text="item.status === 'processing' ? 'proc' : 'queue'"></span>
+
+                            <!-- Progress Bar -->
+                            <div class="flex-1 sm:w-32 min-w-[80px]">
+                                <div class="flex items-center gap-1.5 sm:gap-2">
+                                    <div class="flex-1 bg-gray-600 rounded-full h-1.5 sm:h-2 overflow-hidden">
+                                        <div class="h-full rounded-full transition-all duration-500"
+                                             :class="item.status === 'processing' ? 'bg-yellow-500' : 'bg-orange-500'"
+                                             :style="'width: ' + item.progress + '%'"></div>
+                                    </div>
+                                    <span class="text-[10px] sm:text-xs text-gray-400 w-8 sm:w-10 text-right" x-text="item.progress + '%'"></span>
+                                </div>
+                            </div>
+
+                            <!-- Speed -->
+                            <span class="text-xs sm:text-sm w-10 sm:w-12 text-right"
+                                  x-text="item.avg_speed || '-'"
+                                  :class="{
+                                      'text-green-400': item.avg_speed && parseFloat(item.avg_speed) >= 2.0,
+                                      'text-yellow-400': item.avg_speed && parseFloat(item.avg_speed) >= 1.0 && parseFloat(item.avg_speed) < 2.0,
+                                      'text-orange-400': item.avg_speed && parseFloat(item.avg_speed) >= 0.5 && parseFloat(item.avg_speed) < 1.0,
+                                      'text-red-400': item.avg_speed && parseFloat(item.avg_speed) < 0.5,
+                                      'text-gray-500': !item.avg_speed
+                                  }"></span>
+                        </div>
+                    </div>
+                </div>
+            </template>
+        </div>
+    </div>
+
     <!-- Items Table -->
-    <div class="card overflow-hidden">
+    <div class="card overflow-hidden p-3 sm:p-6 mobile-cards">
         <!-- Bulk Actions Bar -->
-        <div x-show="selectedIds.length > 0" class="mb-4 p-3 bg-gray-800 rounded border border-gray-600 flex justify-between items-center">
-            <div class="text-sm text-gray-300">
-                <span x-text="selectedIds.length"></span> item(s) selected
+        <div x-show="selectedIds.length > 0" class="mb-4 p-2 sm:p-3 bg-gray-800 rounded border border-gray-600 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+            <div class="text-xs sm:text-sm text-gray-300">
+                <span x-text="selectedIds.length"></span> selected
             </div>
-            <div class="flex space-x-2">
-                <button @click="bulkAction('reset')" class="text-xs bg-red-900/50 hover:bg-red-900 text-red-200 px-3 py-2 rounded font-bold">
-                    ⟳ Reset to Missing
+            <div class="flex flex-wrap gap-1.5 sm:gap-2 w-full sm:w-auto">
+                <button @click="bulkAction('reset')" class="flex-1 sm:flex-none text-[10px] sm:text-xs bg-red-900/50 hover:bg-red-900 text-red-200 px-2 sm:px-3 py-1.5 sm:py-2 rounded font-bold">
+                    ⟳ Reset
                 </button>
-                <button @click="bulkAction('mark_completed')" class="text-xs bg-green-900/50 hover:bg-green-900 text-green-200 px-3 py-2 rounded font-bold">
-                    ✓ Mark as Completed
+                <button @click="bulkAction('mark_completed')" class="flex-1 sm:flex-none text-[10px] sm:text-xs bg-green-900/50 hover:bg-green-900 text-green-200 px-2 sm:px-3 py-1.5 sm:py-2 rounded font-bold">
+                    ✓ Done
                 </button>
-                <button @click="bulkAction('mark_failed')" class="text-xs bg-red-800/50 hover:bg-red-800 text-red-200 px-3 py-2 rounded font-bold">
-                    ✗ Mark as Failed
+                <button @click="bulkAction('mark_failed')" class="flex-1 sm:flex-none text-[10px] sm:text-xs bg-red-800/50 hover:bg-red-800 text-red-200 px-2 sm:px-3 py-1.5 sm:py-2 rounded font-bold">
+                    ✗ Fail
                 </button>
-                <button @click="clearSelection" class="text-xs bg-gray-700 hover:bg-gray-600 text-white px-3 py-2 rounded">
-                    Clear Selection
+                <button @click="clearSelection" class="flex-1 sm:flex-none text-[10px] sm:text-xs bg-gray-700 hover:bg-gray-600 text-white px-2 sm:px-3 py-1.5 sm:py-2 rounded">
+                    Clear
                 </button>
             </div>
         </div>
 
-        <div class="flex flex-col md:flex-row justify-between mb-4 space-y-2 md:space-y-0">
-            <h2 class="text-xl font-bold">Media Items</h2>
-            <div class="flex flex-wrap gap-2">
-                <input type="text" x-model="search" @input.debounce.500ms="page=1; fetchItems()" placeholder="Search title..." class="bg-gray-700 text-white p-2 rounded border border-gray-600 focus:border-orange-500 focus:outline-none">
-                <select x-model="filterStatus" @change="page=1; fetchItems()" class="bg-gray-700 text-white p-2 rounded border border-gray-600 focus:border-orange-500 focus:outline-none">
+        <div class="flex flex-col gap-3 mb-4">
+            <h2 class="text-lg sm:text-xl font-bold">Media Items</h2>
+            <div class="flex flex-col sm:flex-row gap-2">
+                <input type="text" x-model="search" @input.debounce.500ms="page=1; fetchItems()" placeholder="Search..." class="bg-gray-700 text-white p-2 rounded border border-gray-600 focus:border-orange-500 focus:outline-none text-sm flex-1 sm:flex-none sm:w-40">
+                <select x-model="filterStatus" @change="page=1; fetchItems()" class="bg-gray-700 text-white p-2 rounded border border-gray-600 focus:border-orange-500 focus:outline-none text-sm">
                     <option value="">All Status</option>
                     <option value="missing">Missing</option>
                     <option value="queued">Queued</option>
@@ -248,16 +342,134 @@
                     <option value="slow_failed">Slow Failed</option>
                     <option value="media_missing">Media Missing</option>
                 </select>
-                <label class="flex items-center bg-gray-700 px-3 py-2 rounded border border-gray-600 cursor-pointer hover:bg-gray-600 transition">
-                    <input type="checkbox" x-model="hideCompleted" @change="page=1; fetchItems()" class="mr-2">
-                    <span class="text-white text-sm">Hide Completed</span>
-                </label>
-                <label class="flex items-center bg-orange-700/30 px-3 py-2 rounded border border-orange-600/50 cursor-pointer hover:bg-orange-700/50 transition">
-                    <input type="checkbox" x-model="showPriorityOnly" @change="page=1; fetchItems()" class="mr-2">
-                    <span class="text-white text-sm">⭐ Priority Only</span>
-                </label>
+                <div class="flex gap-2">
+                    <label class="flex-1 sm:flex-none flex items-center justify-center bg-gray-700 px-2 sm:px-3 py-2 rounded border border-gray-600 cursor-pointer hover:bg-gray-600 transition">
+                        <input type="checkbox" x-model="hideCompleted" @change="page=1; fetchItems()" class="mr-1.5">
+                        <span class="text-white text-xs sm:text-sm whitespace-nowrap">Hide Done</span>
+                    </label>
+                    <label class="flex-1 sm:flex-none flex items-center justify-center bg-orange-700/30 px-2 sm:px-3 py-2 rounded border border-orange-600/50 cursor-pointer hover:bg-orange-700/50 transition">
+                        <input type="checkbox" x-model="showPriorityOnly" @change="page=1; fetchItems()" class="mr-1.5">
+                        <span class="text-white text-xs sm:text-sm whitespace-nowrap">⭐ Priority</span>
+                    </label>
+                </div>
             </div>
         </div>
+        <!-- Mobile Card View -->
+        <div class="mobile-card-view space-y-2">
+            <template x-for="item in items" :key="item.id">
+                <div class="bg-gray-800 rounded-lg p-3 border-l-4"
+                     :class="{
+                         'border-green-500': item.status === 'completed',
+                         'border-yellow-500': item.status === 'processing',
+                         'border-orange-500': item.status === 'queued',
+                         'border-red-500': item.status === 'missing',
+                         'border-red-700': item.status === 'failed',
+                         'border-purple-500': item.status === 'slow_failed',
+                         'border-purple-700': item.status === 'media_missing'
+                     }">
+                    <!-- Header row: checkbox, title, expand -->
+                    <div class="flex items-start gap-2">
+                        <input type="checkbox" :value="item.item_id" @change="toggleSelect(item.item_id)" :checked="selectedIds.includes(item.item_id)" class="cursor-pointer mt-1">
+                        <div class="flex-1 min-w-0">
+                            <div class="flex items-center gap-1.5 flex-wrap">
+                                <template x-if="item.is_priority">
+                                    <span class="text-orange-400 text-xs">⭐</span>
+                                </template>
+                                <template x-if="plexClientIdentifier">
+                                    <a :href="plexWebUrl(item.item_id)" target="_blank" class="font-medium text-sm hover:text-orange-400 underline line-clamp-2" x-text="item.title"></a>
+                                </template>
+                                <template x-if="!plexClientIdentifier">
+                                    <span class="font-medium text-sm line-clamp-2" x-text="item.title"></span>
+                                </template>
+                            </div>
+                            <div class="flex items-center gap-2 mt-1 text-xs text-gray-500">
+                                <span class="capitalize" x-text="item.media_type"></span>
+                                <span>•</span>
+                                <span x-text="item.library_name"></span>
+                            </div>
+                        </div>
+                        <button @click="toggleExpand(item.id)" class="text-gray-400 hover:text-white p-1">
+                            <span x-show="!isExpanded(item.id)">▶</span>
+                            <span x-show="isExpanded(item.id)">▼</span>
+                        </button>
+                    </div>
+                    <!-- Status and progress row -->
+                    <div class="flex items-center gap-3 mt-2">
+                        <span :class="{
+                            'text-green-500': item.status === 'completed',
+                            'text-yellow-500': item.status === 'processing',
+                            'text-orange-500': item.status === 'queued',
+                            'text-red-500': item.status === 'missing',
+                            'text-red-700': item.status === 'failed',
+                            'text-purple-500': item.status === 'slow_failed',
+                            'text-purple-700': item.status === 'media_missing'
+                        }" x-text="item.status.replace('_', ' ')" class="uppercase text-[10px] font-bold bg-gray-900 px-1.5 py-0.5 rounded"></span>
+                        <div class="flex-1 flex items-center gap-2">
+                            <div class="flex-1 bg-gray-600 rounded-full h-1.5 overflow-hidden">
+                                <div class="bg-blue-600 h-full rounded-full transition-all" :style="'width: ' + item.progress + '%'"></div>
+                            </div>
+                            <span class="text-[10px] text-gray-400 w-8" x-text="item.progress + '%'"></span>
+                        </div>
+                        <span class="text-xs w-10 text-right"
+                              x-text="item.avg_speed || '-'"
+                              :class="{
+                                  'text-green-400': item.avg_speed && parseFloat(item.avg_speed) >= 2.0,
+                                  'text-yellow-400': item.avg_speed && parseFloat(item.avg_speed) >= 1.0 && parseFloat(item.avg_speed) < 2.0,
+                                  'text-orange-400': item.avg_speed && parseFloat(item.avg_speed) >= 0.5 && parseFloat(item.avg_speed) < 1.0,
+                                  'text-red-400': item.avg_speed && parseFloat(item.avg_speed) < 0.5
+                              }"></span>
+                    </div>
+                    <!-- Actions row -->
+                    <div class="flex flex-wrap gap-1.5 mt-2">
+                        <template x-if="item.status === 'queued' || item.status === 'missing'">
+                            <button @click="moveItem(item.item_id, 'top')" class="text-[10px] bg-gray-700 hover:bg-gray-600 text-white px-2 py-1 rounded">▲ Top</button>
+                        </template>
+                        <template x-if="item.status === 'processing'">
+                            <button @click="moveItem(item.item_id, 'reset')" class="text-[10px] bg-red-900/50 hover:bg-red-900 text-red-200 px-2 py-1 rounded">⟳ Reset</button>
+                        </template>
+                        <template x-if="item.status === 'failed' || item.status === 'slow_failed' || item.status === 'media_missing'">
+                            <button @click="resetToMissing(item.item_id)" class="text-[10px] bg-red-900/50 hover:bg-red-900 text-red-200 px-2 py-1 rounded">⟳ Reset</button>
+                        </template>
+                        <template x-if="item.status === 'completed'">
+                            <button @click="regenerateItem(item.item_id)" class="text-[10px] bg-blue-900/50 hover:bg-blue-900 text-blue-200 px-2 py-1 rounded">⟳ Regen</button>
+                        </template>
+                        <template x-if="item.status !== 'completed' && item.status !== 'failed' && item.status !== 'slow_failed' && item.status !== 'media_missing'">
+                            <button @click="markCompleted(item.item_id)" class="text-[10px] bg-green-900/50 hover:bg-green-900 text-green-200 px-2 py-1 rounded">✓ Done</button>
+                        </template>
+                        <template x-if="item.status !== 'failed' && item.status !== 'slow_failed' && item.status !== 'media_missing'">
+                            <button @click="markFailed(item.item_id)" class="text-[10px] bg-red-800/50 hover:bg-red-800 text-red-200 px-2 py-1 rounded">✗ Fail</button>
+                        </template>
+                    </div>
+                    <!-- Expandable details -->
+                    <div x-show="isExpanded(item.id)" x-collapse class="mt-3 pt-3 border-t border-gray-700 space-y-2 text-xs">
+                        <div class="grid grid-cols-2 gap-2">
+                            <div><span class="text-gray-500">ID:</span> <span x-text="item.item_id"></span></div>
+                            <div><span class="text-gray-500">Part:</span> <span x-text="item.part_index + 1"></span></div>
+                            <div><span class="text-gray-500">Added:</span> <span x-text="formatDate(item.added_at)"></span></div>
+                            <div><span class="text-gray-500">Updated:</span> <span x-text="formatDate(item.updated_at)"></span></div>
+                        </div>
+                        <div x-show="item.bundle_hash">
+                            <span class="text-gray-500">Bundle:</span>
+                            <span class="font-mono text-[10px] break-all" x-text="item.bundle_hash"></span>
+                        </div>
+                        <div x-show="item.file_path">
+                            <span class="text-gray-500">File:</span>
+                            <div class="font-mono text-[10px] break-all bg-gray-900 p-1.5 rounded mt-1" x-text="item.file_path"></div>
+                        </div>
+                        <div x-show="item.symlink_target">
+                            <span class="text-gray-500">Symlink:</span>
+                            <div class="font-mono text-[10px] break-all bg-gray-900 p-1.5 rounded mt-1 text-blue-300" x-text="item.symlink_target"></div>
+                        </div>
+                        <div x-show="item.error_message && (item.status === 'failed' || item.status === 'slow_failed' || item.status === 'media_missing')" class="bg-red-900/20 border border-red-700 rounded p-2">
+                            <span class="text-red-400 font-bold">Error:</span>
+                            <div class="text-red-300 font-mono text-[10px] break-all mt-1" x-text="item.error_message"></div>
+                        </div>
+                    </div>
+                </div>
+            </template>
+            <div x-show="items.length === 0" class="py-8 text-center text-gray-500">No items found.</div>
+        </div>
+
         <div class="overflow-x-auto">
             <table class="w-full text-left">
                 <thead>
@@ -484,14 +696,14 @@
         </div>
         
         <!-- Pagination -->
-        <div class="flex justify-between items-center mt-4 pt-4 border-t border-gray-700">
-            <div class="flex items-center space-x-4">
-                <span class="text-sm text-gray-400" x-show="totalPages > 1">
-                    Showing page <span x-text="page" class="font-bold text-white"></span> of <span x-text="totalPages" class="font-bold text-white"></span>
+        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mt-4 pt-4 border-t border-gray-700">
+            <div class="flex flex-wrap items-center gap-2 sm:gap-4">
+                <span class="text-xs sm:text-sm text-gray-400" x-show="totalPages > 1">
+                    Page <span x-text="page" class="font-bold text-white"></span>/<span x-text="totalPages" class="font-bold text-white"></span>
                 </span>
-                <div class="flex items-center space-x-2">
-                    <label class="text-sm text-gray-400">Items per page:</label>
-                    <select x-model.number="limit" @change="page=1; fetchItems()" class="bg-gray-700 text-white rounded px-2 py-1 text-sm">
+                <div class="flex items-center gap-1.5">
+                    <label class="text-xs sm:text-sm text-gray-400">Per page:</label>
+                    <select x-model.number="limit" @change="page=1; fetchItems()" class="bg-gray-700 text-white rounded px-2 py-1 text-xs sm:text-sm">
                         <option value="10">10</option>
                         <option value="20">20</option>
                         <option value="50">50</option>
@@ -499,9 +711,9 @@
                     </select>
                 </div>
             </div>
-            <div class="flex space-x-2" x-show="totalPages > 1">
-                <button @click="page--; fetchItems()" :disabled="page <= 1" class="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded disabled:opacity-50 disabled:cursor-not-allowed text-sm">Previous</button>
-                <button @click="page++; fetchItems()" :disabled="page >= totalPages" class="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded disabled:opacity-50 disabled:cursor-not-allowed text-sm">Next</button>
+            <div class="flex gap-2 w-full sm:w-auto" x-show="totalPages > 1">
+                <button @click="page--; fetchItems()" :disabled="page <= 1" class="flex-1 sm:flex-none px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded disabled:opacity-50 disabled:cursor-not-allowed text-xs sm:text-sm">Prev</button>
+                <button @click="page++; fetchItems()" :disabled="page >= totalPages" class="flex-1 sm:flex-none px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded disabled:opacity-50 disabled:cursor-not-allowed text-xs sm:text-sm">Next</button>
             </div>
         </div>
     </div>
@@ -511,6 +723,7 @@
             return {
                 stats: { total: 0, completed: 0, processing: 0, queued: 0, missing: 0, failed: 0 },
                 items: [],
+                processingItems: [], // Items currently being processed or queued (for the processing section)
                 filterStatus: '',
                 search: '',
                 hideCompleted: false, // Filter to hide completed items
@@ -538,6 +751,7 @@
                 lastSyncTime: null, // Last sync timestamp from API
                 lastSyncAgo: 'Never', // Relative time string
                 lastSyncSummary: '', // Formatted sync summary
+                syncInProgress: false, // Track if sync is currently running
 
                 get allSelected() {
                     // Get unique item_ids from current items
@@ -596,6 +810,7 @@
                 init() {
                     this.fetchStats();
                     this.fetchItems();
+                    this.fetchProcessingItems(); // Fetch processing items on init
                     this.fetchQueueStatus();
                     this.fetchLibraries(); // Fetch libraries on init
                     this.fetchPlexClientIdentifier(); // Fetch Plex client identifier
@@ -604,6 +819,7 @@
                     setInterval(() => {
                         this.fetchStats();
                         this.fetchQueueStatus();
+                        this.fetchProcessingItems(); // Always refresh processing items
                         // Only auto-refresh list if processing items exist or we are on page 1 without search
                         // Otherwise it disturbs pagination/search
                         if (this.stats.processing > 0) {
@@ -729,6 +945,14 @@
                         this.libraries = await res.json();
                     } catch (e) { console.error(e); }
                 },
+
+                async fetchProcessingItems() {
+                    try {
+                        const res = await fetch('/api/items/processing');
+                        const data = await res.json();
+                        this.processingItems = data.items || [];
+                    } catch (e) { console.error(e); }
+                },
                 
                 async fetchQueueStatus() {
                     try {
@@ -750,6 +974,9 @@
                         const res = await fetch('/api/stats');
                         const data = await res.json();
                         this.stats = data;
+
+                        // Update sync in progress status
+                        this.syncInProgress = data.sync_in_progress || false;
 
                         // Update last sync time if available
                         if (data.last_sync_time) {

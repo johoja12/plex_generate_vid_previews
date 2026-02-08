@@ -5,7 +5,7 @@ services:
     build: .
     environment:
       - PUID=1000
-      - PGID=109
+      - PGID=993
       - TZ=Etc/UTC
       # App Config
       - ADMIN_PASSWORD=admin  # Change this!
@@ -19,17 +19,19 @@ services:
       - GPU_THREADS=1
       - CPU_THREADS=1
       - LOG_LEVEL=DEBUG
+      # Startup Wait (for delayed mounts like rclone)
+      - STARTUP_WAIT_PATH=/mnt/remote/nzbdav/content
     volumes:
       - ./config:/config
       - /mnt:/mnt
-      - /mnt/storage-raid/plex/Library/Application Support/Plex Media Server/:/config/plex # Mount your actual Plex config folder here (Read-Only recommended)
+      - /mnt/plex-data/Library/Application Support/Plex Media Server/:/config/plex # Mount your actual Plex config folder here (Read-Only recommended)
       # You might need to map media folders if using CPU processing or if path mapping is required
       # - /path/to/media:/data/media
     ports:
       - 8008:8008
     restart: unless-stopped
     group_add:
-      - 109  # render group GID
+      - 993  # render group GID
     devices:
       - /dev/dri:/dev/dri
     # devices:

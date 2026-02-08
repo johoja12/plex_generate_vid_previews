@@ -46,10 +46,17 @@ if [ "$(id -u)" = "0" ]; then
     # Running as root - drop privileges to abc user
     # gosu preserves environment variables
     
-    # Ensure config directory exists and is writable if using default DB path
-    if [[ "$DB_PATH" == "/config/"* ]]; then
-        mkdir -p /config
-        chown -R abc:abc /config
+    # Ensure the database file's parent directory exists and is writable
+    # IMPORTANT: Do NOT chown -R /config as it may contain large mounted volumes (like Plex config)
+    if [[ -n "$DB_PATH" ]]; then
+        DB_DIR=$(dirname "$DB_PATH")
+        mkdir -p "$DB_DIR"
+        # Only chown the specific DB directory and file, not entire /config tree
+        chown abc:abc "$DB_DIR"
+        # Also chown the DB file if it exists
+        if [[ -f "$DB_PATH" ]]; then
+            chown abc:abc "$DB_PATH"
+        fi
     fi
     
     exec gosu abc plex-previews-web "$@"

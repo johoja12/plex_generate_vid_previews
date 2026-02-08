@@ -9,20 +9,23 @@
     <style>
         body { background-color: #1a1a1a; color: #e5e5e5; }
         [x-cloak] { display: none !important; }
-        .card { background-color: #2d2d2d; border-radius: 0.5rem; padding: 1.5rem; }
+        .card { background-color: #2d2d2d; border-radius: 0.5rem; padding: 1rem; }
+        @media (min-width: 640px) {
+            .card { padding: 1.5rem; }
+        }
     </style>
 </head>
-<body class="container mx-auto p-6" x-data="settings()">
-    <nav class="flex justify-between items-center mb-8">
-        <div class="flex items-center space-x-4">
+<body class="container mx-auto p-4 sm:p-6" x-data="settings()">
+    <nav class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-6 sm:mb-8">
+        <div class="flex items-center space-x-3 sm:space-x-4">
             <a href="/" class="text-gray-400 hover:text-white">
-                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path></svg>
+                <svg class="w-5 h-5 sm:w-6 sm:h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path></svg>
             </a>
-            <h1 class="text-2xl font-bold text-orange-500">Settings</h1>
+            <h1 class="text-xl sm:text-2xl font-bold text-orange-500">Settings</h1>
         </div>
-        <div>
-            <span class="mr-4 text-gray-400">User: {{ user }}</span>
-            <a href="/logout" class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded text-sm">Logout</a>
+        <div class="flex items-center gap-2 sm:gap-4">
+            <span class="text-gray-400 text-sm">User: {{ user }}</span>
+            <a href="/logout" class="bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 sm:px-4 sm:py-2 rounded text-sm">Logout</a>
         </div>
     </nav>
 
@@ -30,7 +33,7 @@
         
         <!-- Worker Configuration -->
         <div class="card">
-            <h2 class="text-xl font-bold mb-4 pb-2 border-b border-gray-700">Performance</h2>
+            <h2 class="text-lg sm:text-xl font-bold mb-4 pb-2 border-b border-gray-700">Performance</h2>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div>
                     <label class="block text-gray-400 text-sm font-bold mb-2">GPU Threads</label>
@@ -52,7 +55,7 @@
 
         <!-- Security -->
         <div class="card">
-            <h2 class="text-xl font-bold mb-4 pb-2 border-b border-gray-700">Security</h2>
+            <h2 class="text-lg sm:text-xl font-bold mb-4 pb-2 border-b border-gray-700">Security</h2>
             <div>
                 <label class="block text-gray-400 text-sm font-bold mb-2">New Admin Password</label>
                 <input
@@ -72,7 +75,7 @@
 
         <!-- Mount Protection -->
         <div class="card border border-yellow-900 bg-yellow-900/10">
-            <h2 class="text-xl font-bold mb-4 pb-2 border-b border-yellow-900 text-yellow-400">Mount Protection</h2>
+            <h2 class="text-lg sm:text-xl font-bold mb-4 pb-2 border-b border-yellow-900 text-yellow-400">Mount Protection</h2>
             <p class="text-sm text-gray-400 mb-4">Protect against processing when media folders are unmounted (e.g., rclone crashes, NAS offline).</p>
             <div class="space-y-4">
                 <div>
@@ -103,10 +106,10 @@
                     <p class="text-xs text-gray-500 mt-1">If more than this % of items suddenly become missing, abort sync and pause queue (default: 50%).</p>
                 </div>
                 <div class="pt-2">
-                    <button @click="testMounts" :disabled="testingMounts" class="bg-yellow-600 hover:bg-yellow-700 disabled:bg-gray-600 text-white font-bold py-2 px-4 rounded transition flex items-center">
+                    <button @click="testMounts" :disabled="testingMounts" class="w-full sm:w-auto bg-yellow-600 hover:bg-yellow-700 disabled:bg-gray-600 text-white font-bold py-2 px-4 rounded transition flex items-center justify-center text-sm">
                         <span x-show="!testingMounts">Test Mount Validation</span>
                         <span x-show="testingMounts" class="flex items-center">
-                            <span class="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full mr-2"></span>
+                            <span class="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full mr-2"></span>
                             Testing...
                         </span>
                     </button>
@@ -124,7 +127,7 @@
 
         <!-- Multi-User Priority -->
         <div class="card border border-purple-900 bg-purple-900/10">
-            <h2 class="text-xl font-bold mb-4 pb-2 border-b border-purple-900 text-purple-400">Multi-User Priority Queue</h2>
+            <h2 class="text-lg sm:text-xl font-bold mb-4 pb-2 border-b border-purple-900 text-purple-400">Multi-User Priority</h2>
             <p class="text-sm text-gray-400 mb-4">Enable priority detection for all users on the server (requires server owner/admin token).</p>
             <div class="space-y-4">
                 <div>
@@ -159,7 +162,7 @@
 
         <!-- Rate Limiting -->
         <div class="card border border-teal-900 bg-teal-900/10">
-            <h2 class="text-xl font-bold mb-4 pb-2 border-b border-teal-900 text-teal-400">Data Rate Limiting</h2>
+            <h2 class="text-lg sm:text-xl font-bold mb-4 pb-2 border-b border-teal-900 text-teal-400">Data Rate Limiting</h2>
             <p class="text-sm text-gray-400 mb-4">Limit the amount of data processed per hour to avoid hitting Usenet provider or storage rate limits.</p>
             <div class="space-y-4">
                 <div>
@@ -173,23 +176,38 @@
                         class="w-full bg-gray-700 text-white p-2 rounded border border-gray-600 focus:border-orange-500 focus:outline-none">
                     <p class="text-xs text-gray-500 mt-1">Maximum GB of media to process per hour. Set to 0 for no limit.</p>
                 </div>
+                <div>
+                    <label class="block text-gray-400 text-sm font-bold mb-2">Rate Limit Exempt Paths</label>
+                    <input
+                        type="text"
+                        x-model="config.rate_limit_exempt_paths"
+                        placeholder="/mnt/remote/nzbdav,/mnt/local"
+                        class="w-full bg-gray-700 text-white p-2 rounded border border-gray-600 focus:border-orange-500 focus:outline-none">
+                    <p class="text-xs text-gray-500 mt-1">Comma-separated paths exempt from rate limiting. Files (or symlink targets) under these paths are processed without counting toward the hourly limit.</p>
+                </div>
+                <div class="bg-teal-900/20 border border-teal-800 rounded p-3 mt-4">
+                    <p class="text-xs text-teal-200">
+                        <strong>💡 Tip:</strong> Use this to exempt local storage or fast providers (e.g., NZBDav) while rate-limiting slower ones (e.g., Real-Debrid).
+                        When the rate limit is reached, exempt files continue processing while rate-limited files are skipped until quota resets.
+                    </p>
+                </div>
             </div>
         </div>
 
         <!-- Maintenance -->
         <div class="card border border-blue-900 bg-blue-900/10">
-            <h2 class="text-xl font-bold mb-4 pb-2 border-b border-blue-900 text-blue-400">Maintenance</h2>
+            <h2 class="text-lg sm:text-xl font-bold mb-4 pb-2 border-b border-blue-900 text-blue-400">Maintenance</h2>
             <div class="space-y-4">
                 <!-- Discover Existing BIFs -->
-                <div class="flex justify-between items-center pb-4 border-b border-blue-800">
-                    <div>
-                        <h3 class="font-bold text-blue-300">Discover Existing BIFs</h3>
-                        <p class="text-sm text-gray-400">Scans MISSING items to find pre-existing BIF files and marks them as COMPLETED (no regeneration needed).</p>
+                <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 pb-4 border-b border-blue-800">
+                    <div class="flex-1">
+                        <h3 class="font-bold text-blue-300 text-sm sm:text-base">Discover Existing BIFs</h3>
+                        <p class="text-xs sm:text-sm text-gray-400">Scans MISSING items to find pre-existing BIF files.</p>
                     </div>
-                    <button @click="discoverExisting" :disabled="discovering" class="bg-green-600 hover:bg-green-700 disabled:bg-gray-600 text-white font-bold py-2 px-4 rounded transition flex items-center">
+                    <button @click="discoverExisting" :disabled="discovering" class="w-full sm:w-auto bg-green-600 hover:bg-green-700 disabled:bg-gray-600 text-white font-bold py-2 px-4 rounded transition flex items-center justify-center text-sm">
                         <span x-show="!discovering">Scan Missing</span>
                         <span x-show="discovering" class="flex items-center">
-                            <span class="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full mr-2"></span>
+                            <span class="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full mr-2"></span>
                             Scanning...
                         </span>
                     </button>
@@ -197,20 +215,20 @@
                 <div x-show="discoverResult" x-transition class="p-3 rounded bg-green-900/30 text-green-200" x-text="discoverResult"></div>
 
                 <!-- Verify Completed -->
-                <div class="flex justify-between items-center pt-4">
-                    <div>
-                        <h3 class="font-bold text-blue-300">Verify Completed Items</h3>
-                        <p class="text-sm text-gray-400">Scans all completed items to verify BIF files exist. Moves items with missing BIFs back to MISSING status.</p>
+                <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 pt-4">
+                    <div class="flex-1">
+                        <h3 class="font-bold text-blue-300 text-sm sm:text-base">Verify Completed Items</h3>
+                        <p class="text-xs sm:text-sm text-gray-400">Verifies BIF files exist for completed items.</p>
                     </div>
-                    <div class="flex space-x-2">
-                        <button @click="debugVerify" class="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-3 rounded transition text-sm">
+                    <div class="flex gap-2 w-full sm:w-auto">
+                        <button @click="debugVerify" class="flex-1 sm:flex-none bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-3 rounded transition text-sm">
                             Debug
                         </button>
-                        <button @click="verifyCompleted" :disabled="verifying" class="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white font-bold py-2 px-4 rounded transition flex items-center">
-                            <span x-show="!verifying">Verify Now</span>
+                        <button @click="verifyCompleted" :disabled="verifying" class="flex-1 sm:flex-none bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white font-bold py-2 px-3 sm:px-4 rounded transition flex items-center justify-center text-sm">
+                            <span x-show="!verifying">Verify</span>
                             <span x-show="verifying" class="flex items-center">
-                                <span class="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full mr-2"></span>
-                                Verifying...
+                                <span class="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full mr-2"></span>
+                                ...
                             </span>
                         </button>
                     </div>
@@ -218,15 +236,15 @@
                 <div x-show="verifyResult" x-transition class="p-3 rounded bg-blue-900/30 text-blue-200" x-text="verifyResult"></div>
 
                 <!-- Reset Failed Items -->
-                <div class="flex justify-between items-center pt-4 border-t border-blue-800">
-                    <div>
-                        <h3 class="font-bold text-blue-300">Reset Failed Items</h3>
-                        <p class="text-sm text-gray-400">Resets all FAILED items back to MISSING status so they can be reprocessed.</p>
+                <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 pt-4 border-t border-blue-800">
+                    <div class="flex-1">
+                        <h3 class="font-bold text-blue-300 text-sm sm:text-base">Reset Failed Items</h3>
+                        <p class="text-xs sm:text-sm text-gray-400">Resets FAILED items to MISSING for reprocessing.</p>
                     </div>
-                    <button @click="resetFailed" :disabled="resettingFailed" class="bg-orange-600 hover:bg-orange-700 disabled:bg-gray-600 text-white font-bold py-2 px-4 rounded transition flex items-center">
+                    <button @click="resetFailed" :disabled="resettingFailed" class="w-full sm:w-auto bg-orange-600 hover:bg-orange-700 disabled:bg-gray-600 text-white font-bold py-2 px-4 rounded transition flex items-center justify-center text-sm">
                         <span x-show="!resettingFailed">Reset Failed</span>
                         <span x-show="resettingFailed" class="flex items-center">
-                            <span class="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full mr-2"></span>
+                            <span class="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full mr-2"></span>
                             Resetting...
                         </span>
                     </button>
@@ -234,24 +252,24 @@
                 <div x-show="resetFailedResult" x-transition class="p-3 rounded bg-orange-900/30 text-orange-200" x-text="resetFailedResult"></div>
 
                 <!-- Cleanup Orphaned Bundles -->
-                <div class="flex justify-between items-center pt-4 border-t border-blue-800">
-                    <div>
-                        <h3 class="font-bold text-blue-300">Cleanup Orphaned Bundles</h3>
-                        <p class="text-sm text-gray-400">Scans for bundle directories that no longer exist in Plex database (deleted media) and optionally removes them to free disk space.</p>
+                <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 pt-4 border-t border-blue-800">
+                    <div class="flex-1">
+                        <h3 class="font-bold text-blue-300 text-sm sm:text-base">Cleanup Orphaned Bundles</h3>
+                        <p class="text-xs sm:text-sm text-gray-400">Removes bundle directories for deleted media.</p>
                     </div>
-                    <div class="flex space-x-2">
-                        <button @click="cleanupOrphaned(true)" :disabled="cleaningUp" class="bg-yellow-600 hover:bg-yellow-700 disabled:bg-gray-600 text-white font-bold py-2 px-4 rounded transition flex items-center">
+                    <div class="flex gap-2 w-full sm:w-auto">
+                        <button @click="cleanupOrphaned(true)" :disabled="cleaningUp" class="flex-1 sm:flex-none bg-yellow-600 hover:bg-yellow-700 disabled:bg-gray-600 text-white font-bold py-2 px-3 rounded transition flex items-center justify-center text-sm">
                             <span x-show="!cleaningUp">🔍 Dry Run</span>
                             <span x-show="cleaningUp" class="flex items-center">
-                                <span class="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full mr-2"></span>
-                                Scanning...
+                                <span class="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full mr-1"></span>
+                                ...
                             </span>
                         </button>
-                        <button @click="cleanupOrphaned(false)" :disabled="cleaningUp" class="bg-red-600 hover:bg-red-700 disabled:bg-gray-600 text-white font-bold py-2 px-4 rounded transition flex items-center">
+                        <button @click="cleanupOrphaned(false)" :disabled="cleaningUp" class="flex-1 sm:flex-none bg-red-600 hover:bg-red-700 disabled:bg-gray-600 text-white font-bold py-2 px-3 rounded transition flex items-center justify-center text-sm">
                             <span x-show="!cleaningUp">🗑️ Delete</span>
                             <span x-show="cleaningUp" class="flex items-center">
-                                <span class="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full mr-2"></span>
-                                Deleting...
+                                <span class="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full mr-1"></span>
+                                ...
                             </span>
                         </button>
                     </div>
@@ -262,113 +280,28 @@
             </div>
         </div>
 
-        <!-- Missing Hashes -->
-        <div class="card" x-show="missingHashes.total > 0 || missingHashes.loading || missingHashes.search.length > 0" x-cloak>
-            <div class="flex justify-between items-center mb-4 pb-2 border-b border-gray-700">
-                <h2 class="text-xl font-bold text-yellow-500">All Media Items with Bundle Hash Status</h2>
-                <span class="bg-yellow-900 text-yellow-200 text-xs px-2 py-1 rounded" x-text="missingHashes.total + ' items'"></span>
-            </div>
-            
-            <p class="text-sm text-gray-400 mb-4">
-                This table shows all media items. Items marked "Yes" under "Missing" indicate that Plex has not provided a bundle hash, preventing preview generation. The system will automatically try to trigger analysis for these items during the next scan.
-            </p>
-
-            <div class="mb-4">
-                <input 
-                    type="text" 
-                    x-model="missingHashes.search" 
-                    @input.debounce.500ms="fetchMissingHashes(1)"
-                    placeholder="Search missing items..." 
-                    class="w-full bg-gray-700 text-white p-2 rounded border border-gray-600 focus:border-yellow-500 focus:outline-none text-sm"
-                >
-            </div>
-
-            <div class="overflow-x-auto">
-                <table class="w-full text-left text-sm text-gray-400">
-                    <thead class="bg-gray-800 text-gray-200 uppercase font-medium">
-                        <tr>
-                            <th class="px-4 py-2">ID</th>
-                            <th class="px-4 py-2">Title</th>
-                            <th class="px-4 py-2">Library</th>
-                            <th class="px-4 py-2">Added</th>
-                            <th class="px-4 py-2">Missing</th>
-                            <th class="px-4 py-2">Current Hash</th>
-                            <th class="px-4 py-2">Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody class="divide-y divide-gray-700">
-                        <template x-for="item in missingHashes.items" :key="item.id">
-                            <tr class="hover:bg-gray-700/50">
-                                <td class="px-4 py-2 font-mono text-xs" x-text="item.id"></td>
-                                <td class="px-4 py-2 font-medium text-white" x-text="item.title"></td>
-                                <td class="px-4 py-2" x-text="item.library_name"></td>
-                                <td class="px-4 py-2" x-text="new Date(item.added_at).toLocaleDateString()"></td>
-                                <td class="px-4 py-2">
-                                    <span :class="item.is_bundle_hash_missing ? 'text-red-400' : 'text-green-400'" x-text="item.is_bundle_hash_missing ? 'Yes' : 'No'"></span>
-                                </td>
-                                <td class="px-4 py-2 font-mono text-xs break-all max-w-xs">
-                                    <span :class="item.bundle_hash ? 'text-gray-300' : 'text-gray-600 italic'" x-text="item.bundle_hash || '(none)'"></span>
-                                </td>
-                                <td class="px-4 py-2">
-                                    <button @click="analyzeItem(item.id)" class="bg-blue-600 hover:bg-blue-700 text-white text-xs px-2 py-1 rounded transition mr-1">
-                                        Analyze
-                                    </button>
-                                    <button @click="logDebugJson(item.id)" class="bg-gray-600 hover:bg-gray-700 text-white text-xs px-2 py-1 rounded transition mr-1" title="Log debug JSON to server console">
-                                        JSON
-                                    </button>
-                                    <button @click="forceHashCalc(item.id)" class="bg-purple-600 hover:bg-purple-700 text-white text-xs px-2 py-1 rounded transition" title="Manually calculate and set hash">
-                                        Force Hash
-                                    </button>
-                                </td>
-                            </tr>
-                        </template>
-                        <tr x-show="missingHashes.items.length === 0 && !missingHashes.loading">
-                            <td colspan="7" class="px-4 py-4 text-center text-gray-500">No items found.</td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
-
-            <!-- Pagination -->
-            <div class="flex justify-between items-center mt-4" x-show="missingHashes.pages > 1">
-                <button 
-                    @click="fetchMissingHashes(missingHashes.page - 1)" 
-                    :disabled="missingHashes.page <= 1"
-                    class="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded disabled:opacity-50 disabled:cursor-not-allowed text-xs">
-                    Previous
-                </button>
-                <span class="text-xs text-gray-500">
-                    Page <span x-text="missingHashes.page"></span> of <span x-text="missingHashes.pages"></span>
-                </span>
-                <button 
-                    @click="fetchMissingHashes(missingHashes.page + 1)" 
-                    :disabled="missingHashes.page >= missingHashes.pages"
-                    class="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded disabled:opacity-50 disabled:cursor-not-allowed text-xs">
-                    Next
-                </button>
-            </div>
-        </div>
-
         <!-- Danger Zone -->
         <div class="card border border-red-900 bg-red-900/10">
-            <h2 class="text-xl font-bold mb-4 pb-2 border-b border-red-900 text-red-500">Danger Zone</h2>
-            <div class="flex justify-between items-center">
-                <div>
-                    <h3 class="font-bold text-red-400">Reset Library Database</h3>
-                    <p class="text-sm text-gray-400">Deletes all local media records and triggers a full resync from Plex.</p>
+            <h2 class="text-lg sm:text-xl font-bold mb-4 pb-2 border-b border-red-900 text-red-500">Danger Zone</h2>
+            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                <div class="flex-1">
+                    <h3 class="font-bold text-red-400 text-sm sm:text-base">Reset Library Database</h3>
+                    <p class="text-xs sm:text-sm text-gray-400">Deletes all local records and triggers full resync.</p>
                 </div>
-                <button @click="resetLibrary" class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded transition">
+                <button @click="resetLibrary" class="w-full sm:w-auto bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded transition text-sm">
                     Reset & Resync
                 </button>
             </div>
         </div>
 
         <!-- Actions -->
-        <div class="flex justify-end space-x-4">
-            <button @click="saveSettings" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-6 rounded transition flex items-center">
+        <div class="flex justify-end">
+            <button @click="saveSettings" class="w-full sm:w-auto bg-green-600 hover:bg-green-700 text-white font-bold py-2.5 px-6 rounded transition flex items-center justify-center text-sm sm:text-base">
                 <span x-show="!saving">Save Changes</span>
-                <span x-show="saving" class="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full mr-2"></span>
-                <span x-show="saving">Saving...</span>
+                <span x-show="saving" class="flex items-center">
+                    <span class="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full mr-2"></span>
+                    Saving...
+                </span>
             </button>
         </div>
         
@@ -387,7 +320,9 @@
                     mount_check_paths: '',
                     mount_failure_threshold: 50.0,
                     enable_multi_user_priority: false,
-                    priority_history_limit: 50
+                    priority_history_limit: 50,
+                    data_limit_gb_per_hour: 0.0,
+                    rate_limit_exempt_paths: ''
                 },
                 syncIntervalHours: 6,  // Default to 6 hours
                 newPassword: '',
@@ -407,14 +342,6 @@
                 mountTestResult: '',
                 mountTestSuccess: false,
                 mountTestMissingPaths: [],
-                missingHashes: {
-                    items: [],
-                    total: 0,
-                    page: 1,
-                    pages: 1,
-                    loading: false,
-                    search: ''
-                },
 
                 async init() {
                     try {
@@ -422,75 +349,7 @@
                         this.config = await res.json();
                         // Convert seconds to hours for display
                         this.syncIntervalHours = Math.round(this.config.sync_interval / 3600);
-                        this.fetchMissingHashes();
                     } catch (e) { console.error(e); }
-                },
-
-                async fetchMissingHashes(page = 1) {
-                    this.missingHashes.loading = true;
-                    try {
-                        let url = `/api/items/all-with-hash-status?page=${page}`;
-                        if (this.missingHashes.search) {
-                            url += `&search=${encodeURIComponent(this.missingHashes.search)}`;
-                        }
-                        const res = await fetch(url);
-                        const data = await res.json();
-                        this.missingHashes.items = data.items;
-                        this.missingHashes.total = data.total;
-                        this.missingHashes.page = data.page;
-                        this.missingHashes.pages = data.pages;
-                    } catch (e) {
-                        console.error("Error fetching missing hashes:", e);
-                    } finally {
-                        this.missingHashes.loading = false;
-                    }
-                },
-
-                async analyzeItem(itemId) {
-                    try {
-                        const res = await fetch(`/api/items/${itemId}/analyze`, { method: 'POST' });
-                        if (res.ok) {
-                            alert('Analysis triggered. The item should update shortly.');
-                            this.fetchMissingHashes(this.missingHashes.page);
-                        } else {
-                            const data = await res.json();
-                            alert('Failed: ' + (data.detail || 'Unknown error'));
-                        }
-                    } catch (e) {
-                        alert('Error: ' + e.message);
-                    }
-                },
-
-                async logDebugJson(itemId) {
-                    try {
-                        const res = await fetch(`/api/items/${itemId}/log-debug-json`, { method: 'POST' });
-                        if (res.ok) {
-                            alert('JSON logged to server console.');
-                        } else {
-                            const data = await res.json();
-                            alert('Failed: ' + (data.detail || 'Unknown error'));
-                        }
-                    } catch (e) {
-                        alert('Error: ' + e.message);
-                    }
-                },
-
-                async forceHashCalc(itemId) {
-                    if (!confirm('Warning: This manually calculates the hash based on the file path. If incorrect, Plex will not see the generated previews. Are you sure?')) {
-                        return;
-                    }
-                    try {
-                        const res = await fetch(`/api/items/${itemId}/force-hash-calc`, { method: 'POST' });
-                        const data = await res.json();
-                        if (res.ok) {
-                            alert(`Success! Calculated hash: ${data.hash}\nItem updated.`);
-                            this.fetchMissingHashes(this.missingHashes.page);
-                        } else {
-                            alert('Failed: ' + (data.detail || 'Unknown error'));
-                        }
-                    } catch (e) {
-                        alert('Error: ' + e.message);
-                    }
                 },
 
                 checkPasswordLength() {
@@ -536,7 +395,8 @@
                             mount_failure_threshold: this.config.mount_failure_threshold,
                             enable_multi_user_priority: this.config.enable_multi_user_priority,
                             priority_history_limit: this.config.priority_history_limit,
-                            data_limit_gb_per_hour: this.config.data_limit_gb_per_hour
+                            data_limit_gb_per_hour: this.config.data_limit_gb_per_hour,
+                            rate_limit_exempt_paths: this.config.rate_limit_exempt_paths
                         };
 
                         const res = await fetch('/api/settings', {

@@ -114,7 +114,10 @@ class Config:
     # Logging
     log_level: str
     scheduler_loop_interval: int = 5 # Default to 5 seconds
-    
+
+    # Database-only mode (bypass Plex API for library scanning)
+    database_only: bool = False
+
     # Internal constants
     worker_pool_timeout: int = 30
 
@@ -493,6 +496,9 @@ def load_config(cli_args=None, print_help=True) -> Config:
     
     # Handle log_level (case insensitive)
     log_level = get_config_value_str(cli_args, 'log_level', 'LOG_LEVEL', 'INFO').upper()
+
+    # Database-only mode (bypass Plex API for library scanning)
+    database_only = get_config_value_bool(cli_args, 'database_only', 'DATABASE_ONLY', False)
     
     # Initialize validation lists
     missing_params = []
@@ -598,7 +604,8 @@ def load_config(cli_args=None, print_help=True) -> Config:
         tmp_folder_created_by_us=tmp_folder_created_by_us,
         ffmpeg_path=ffmpeg_path,
         log_level=log_level,
-        scheduler_loop_interval=get_config_value_int(cli_args, 'scheduler_loop_interval', 'SCHEDULER_LOOP_INTERVAL', 5)
+        scheduler_loop_interval=get_config_value_int(cli_args, 'scheduler_loop_interval', 'SCHEDULER_LOOP_INTERVAL', 5),
+        database_only=database_only
     )
     
     # Set the timeout envvar for https://github.com/pkkid/python-plexapi
@@ -619,5 +626,6 @@ def load_config(cli_args=None, print_help=True) -> Config:
     logger.debug(f'GPU_SELECTION = {config.gpu_selection}')
     logger.debug(f'REGENERATE_THUMBNAILS = {config.regenerate_thumbnails}')
     logger.debug(f'SORT_BY = {config.sort_by}')
-    
+    logger.debug(f'DATABASE_ONLY = {config.database_only}')
+
     return config

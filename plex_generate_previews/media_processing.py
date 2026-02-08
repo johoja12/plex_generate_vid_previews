@@ -23,32 +23,92 @@ from plexapi.exceptions import NotFound
 
 from .utils import sanitize_path
 
+# MediaInfo is no longer required - we use FFprobe for HDR detection
+# Keep the import optional for backwards compatibility with any code that might use it
 try:
     from pymediainfo import MediaInfo
-    # Test that native library is available
     MediaInfo.can_parse()
-except ImportError:
-    print('ERROR: pymediainfo Python package not found.')
-    print('Please install: pip install pymediainfo')
-    sys.exit(1)
-except OSError as e:
-    if 'libmediainfo' in str(e).lower():
-        print('ERROR: MediaInfo native library not found.')
-        print('Please install MediaInfo:')
-        if sys.platform == 'darwin':  # macOS
-            print('  macOS: brew install media-info')
-        elif sys.platform.startswith('linux'):
-            print('  Ubuntu/Debian: sudo apt-get install mediainfo libmediainfo-dev')
-            print('  Fedora/RHEL: sudo dnf install mediainfo mediainfo-devel')
-        else:
-            print('  See: https://mediaarea.net/en/MediaInfo/Download')
-        sys.exit(1)
-except Exception as e:
-    print(f'WARNING: Could not validate MediaInfo library: {e}')
-    print('Proceeding anyway, but errors may occur during processing')
+except (ImportError, OSError, Exception):
+    # MediaInfo not available - this is fine, we use FFprobe instead
+    MediaInfo = None
 
 from .config import Config
 from .plex_client import retry_plex_call, get_hash_from_database
+
+
+def detect_hdr_ffprobe(video_file: str, ffprobe_path: str = "ffprobe", timeout: float = 10.0) -> bool:
+    """
+    Detect if a video file is HDR using ffprobe.
+
+    Much faster than MediaInfo for remote storage since it uses limited analyzeduration
+    and probesize, plus supports read timeouts.
+
+    Args:
+        video_file: Path to video file
+        ffprobe_path: Path to ffprobe executable
+        timeout: Timeout in seconds for the ffprobe command
+
+    Returns:
+        True if HDR is detected, False otherwise
+    """
+    import json
+
+    cmd = [
+        ffprobe_path,
+        "-v", "quiet",
+        "-analyzeduration", "5000000",  # 5 seconds max
+        "-probesize", "5000000",  # 5MB max
+        "-select_streams", "v:0",
+        "-show_streams",
+        "-print_format", "json",
+        video_file
+    ]
+
+    try:
+        start_time = time.time()
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            encoding='utf-8',
+            errors='replace'
+        )
+        elapsed = time.time() - start_time
+
+        if result.returncode != 0:
+            logger.debug(f"FFprobe failed for {video_file} (exit {result.returncode}) in {elapsed:.1f}s")
+            return False
+
+        data = json.loads(result.stdout)
+        streams = data.get("streams", [])
+
+        if not streams:
+            logger.debug(f"FFprobe found no video streams in {video_file} ({elapsed:.1f}s)")
+            return False
+
+        stream = streams[0]
+
+        # HDR indicators:
+        # - color_transfer: smpte2084 (PQ/HDR10) or arib-std-b67 (HLG)
+        # - color_primaries: bt2020
+        color_transfer = stream.get("color_transfer", "")
+        color_primaries = stream.get("color_primaries", "")
+
+        is_hdr = color_transfer in ("smpte2084", "arib-std-b67") or color_primaries == "bt2020"
+
+        logger.debug(f"FFprobe HDR detection for {video_file}: transfer={color_transfer}, primaries={color_primaries}, HDR={is_hdr} ({elapsed:.1f}s)")
+        return is_hdr
+
+    except subprocess.TimeoutExpired:
+        logger.warning(f"FFprobe timed out after {timeout}s for {video_file}")
+        return False
+    except json.JSONDecodeError as e:
+        logger.debug(f"FFprobe JSON parse error for {video_file}: {e}")
+        return False
+    except Exception as e:
+        logger.debug(f"FFprobe error for {video_file}: {type(e).__name__}: {e}")
+        return False
 
 
 class CodecNotSupportedError(Exception):
@@ -210,12 +270,22 @@ def _detect_codec_error(returncode: int, stderr_lines: List[str]) -> bool:
     return False
 
 
-def heuristic_allows_skip(ffmpeg_path: str, video_file: str) -> bool:
+def heuristic_allows_skip(ffmpeg_path: str, video_file: str,
+                          gpu: Optional[str] = None, gpu_device_path: Optional[str] = None) -> bool:
     """
     Using the first 10 frames of file to decide if -skip_frame:v nokey is safe.
     Uses -err_detect explode + -xerror to bail immediately on the first decode error.
     Returns True if the probe succeeds, else False. Logs a short tail if available.
+
+    Args:
+        ffmpeg_path: Path to FFmpeg executable
+        video_file: Path to video file to probe
+        gpu: GPU type ('NVIDIA', 'AMD', 'INTEL', 'WINDOWS_GPU', 'APPLE', or None)
+        gpu_device_path: GPU device path (e.g., '/dev/dri/renderD128' for VAAPI)
     """
+    logger.debug(f"Running skip_frame heuristic for {video_file} (GPU={gpu})")
+    start_time = time.time()
+
     null_sink = "NUL" if os.name == "nt" else "/dev/null"
     cmd = [
         ffmpeg_path,
@@ -223,6 +293,20 @@ def heuristic_allows_skip(ffmpeg_path: str, video_file: str) -> bool:
         "-v", "error",            # only errors
         "-xerror",                # make errors set non-zero exit
         "-err_detect", "explode", # fail fast on decode issues
+    ]
+
+    # Add hardware acceleration for faster decoding (before -i flag)
+    if gpu:
+        if gpu == 'NVIDIA':
+            cmd += ["-hwaccel", "cuda"]
+        elif gpu == 'WINDOWS_GPU':
+            cmd += ["-hwaccel", "d3d11va"]
+        elif gpu == 'APPLE':
+            cmd += ["-hwaccel", "videotoolbox"]
+        elif gpu_device_path and gpu_device_path.startswith('/dev/dri/'):
+            cmd += ["-hwaccel", "vaapi", "-vaapi_device", gpu_device_path]
+
+    cmd += [
         "-skip_frame:v", "nokey",
         "-threads:v", "1",
         "-i", video_file,
@@ -231,12 +315,13 @@ def heuristic_allows_skip(ffmpeg_path: str, video_file: str) -> bool:
         "-f", "null", null_sink
     ]
     proc = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace')
+    elapsed = time.time() - start_time
     ok = (proc.returncode == 0)
     if not ok:
         last = (proc.stderr or "").strip().splitlines()[-1:]  # tail(1)
-        logger.debug(f"skip_frame probe FAILED at 0s: rc={proc.returncode} msg={last}")
+        logger.debug(f"skip_frame probe FAILED in {elapsed:.1f}s: rc={proc.returncode} msg={last}")
     else:
-        logger.debug("skip_frame probe OK at 0s")
+        logger.debug(f"skip_frame probe OK in {elapsed:.1f}s")
     return ok
 
 
@@ -272,17 +357,20 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
             seconds (float): Elapsed processing time (last attempt)
             speed (str): Reported or computed FFmpeg speed string
     """
-    media_info = MediaInfo.parse(video_file)
+    # Detect HDR using FFprobe (faster than MediaInfo, especially for remote storage)
+    # FFprobe path is derived from FFmpeg path (same directory)
+    ffprobe_path = config.ffmpeg_path.replace("ffmpeg", "ffprobe") if "ffmpeg" in config.ffmpeg_path else "ffprobe"
+    is_hdr = detect_hdr_ffprobe(video_file, ffprobe_path, timeout=10.0)
+
     fps_value = round(1 / config.plex_bif_frame_interval, 6)
-    
+
     # Base video filter for SDR content
     base_scale = "scale=w=320:h=240:force_original_aspect_ratio=decrease"
     vf_parameters = f"fps=fps={fps_value}:round=up,{base_scale}"
 
-    # Check if we have HDR Format. Note: Sometimes it can be returned as "None" (string) hence the check for None type or "None" (String)
-    if media_info.video_tracks:
-        if media_info.video_tracks[0].hdr_format != "None" and media_info.video_tracks[0].hdr_format is not None:
-            vf_parameters = f"fps=fps={fps_value}:round=up,zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p,{base_scale}"
+    # Apply HDR tonemapping filter chain if HDR detected
+    if is_hdr:
+        vf_parameters = f"fps=fps={fps_value}:round=up,zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p,{base_scale}"
     
     def _run_ffmpeg(use_skip: bool, gpu_override: Optional[str] = None, gpu_device_path_override: Optional[str] = None) -> tuple:
         """Run FFmpeg once and return (returncode, seconds, speed, stderr_lines, total_duration)."""
@@ -446,7 +534,7 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
         return proc.returncode, seconds_local, speed_local, ffmpeg_output_lines, total_duration
 
     # Decide initial skip usage from heuristic
-    use_skip_initial = heuristic_allows_skip(config.ffmpeg_path, video_file)
+    use_skip_initial = heuristic_allows_skip(config.ffmpeg_path, video_file, gpu, gpu_device_path)
 
     # Ensure output folder exists
     os.makedirs(output_folder, exist_ok=True)

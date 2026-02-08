@@ -200,6 +200,20 @@ def create_db_and_tables():
     except Exception:
         pass
 
+    # Migration: Add rate_limit_exempt_paths to AppSettings
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("ALTER TABLE appsettings ADD COLUMN rate_limit_exempt_paths VARCHAR"))
+    except Exception:
+        pass
+
+    # Migration: Add use_database_sync to AppSettings (default: 1/True for faster sync)
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("ALTER TABLE appsettings ADD COLUMN use_database_sync INTEGER DEFAULT 1"))
+    except Exception:
+        pass
+
 def get_session():
     with Session(engine) as session:
         yield session
