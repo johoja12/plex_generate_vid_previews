@@ -129,6 +129,25 @@ def create_db_and_tables():
     except Exception:
         pass
 
+    # Migration: Add ranked priority metadata to MediaItem
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("ALTER TABLE mediaitem ADD COLUMN priority_score INTEGER DEFAULT 0"))
+    except Exception:
+        pass
+
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("ALTER TABLE mediaitem ADD COLUMN priority_reasons VARCHAR"))
+    except Exception:
+        pass
+
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("ALTER TABLE mediaitem ADD COLUMN priority_last_calculated_at DATETIME"))
+    except Exception:
+        pass
+
     # Migration: Add current_processing_bundle_hash to MediaItem
     try:
         with engine.connect() as connection:

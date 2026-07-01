@@ -157,7 +157,7 @@
     </div>
 
     <!-- Stats Grid -->
-    <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2 sm:gap-4 mb-8">
+    <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2 sm:gap-4 mb-8">
         <div class="card border-l-4 border-blue-500 p-3 sm:p-4">
             <h3 class="text-gray-400 text-xs sm:text-sm">Total</h3>
             <p class="text-xl sm:text-2xl font-bold" x-text="stats.total">0</p>
@@ -173,6 +173,10 @@
         <div class="card border-l-4 border-orange-500 p-3 sm:p-4">
             <h3 class="text-gray-400 text-xs sm:text-sm">Queued</h3>
             <p class="text-xl sm:text-2xl font-bold" x-text="stats.queued">0</p>
+        </div>
+        <div class="card border-l-4 border-emerald-500 p-3 sm:p-4">
+            <h3 class="text-gray-400 text-xs sm:text-sm">Priority</h3>
+            <p class="text-xl sm:text-2xl font-bold" x-text="stats.priority">0</p>
         </div>
         <div class="card border-l-4 border-red-500 p-3 sm:p-4">
             <h3 class="text-gray-400 text-xs sm:text-sm">Missing</h3>
@@ -255,6 +259,12 @@
                             <div class="flex items-center gap-1.5 sm:gap-2 flex-wrap">
                                 <template x-if="item.is_priority">
                                     <span class="text-orange-400 text-xs sm:text-sm" title="Priority Item">⭐</span>
+                                </template>
+                                <template x-for="chip in priorityReasonChips(item)" :key="chip.type">
+                                    <span class="px-1.5 py-0.5 rounded-full text-[10px] font-bold leading-none"
+                                          :class="priorityReasonClass(chip)"
+                                          :title="priorityReasonTitle(chip)"
+                                          x-text="priorityReasonLabel(chip)"></span>
                                 </template>
                                 <template x-if="plexClientIdentifier">
                                     <a :href="plexWebUrl(item.id)" target="_blank" class="font-medium hover:text-orange-400 underline text-sm sm:text-base truncate max-w-[200px] sm:max-w-none" x-text="item.title"></a>
@@ -374,6 +384,12 @@
                             <div class="flex items-center gap-1.5 flex-wrap">
                                 <template x-if="item.is_priority">
                                     <span class="text-orange-400 text-xs">⭐</span>
+                                </template>
+                                <template x-for="chip in priorityReasonChips(item)" :key="chip.type">
+                                    <span class="px-1.5 py-0.5 rounded-full text-[10px] font-bold leading-none"
+                                          :class="priorityReasonClass(chip)"
+                                          :title="priorityReasonTitle(chip)"
+                                          x-text="priorityReasonLabel(chip)"></span>
                                 </template>
                                 <template x-if="plexClientIdentifier">
                                     <a :href="plexWebUrl(item.item_id)" target="_blank" class="font-medium text-sm hover:text-orange-400 underline line-clamp-2" x-text="item.title"></a>
@@ -538,6 +554,12 @@
                             <div class="flex items-center gap-2">
                                 <template x-if="item.is_priority">
                                     <span class="text-orange-400 text-sm" title="Priority Item (On Deck / Recently Played / Adjacent Episode)">⭐</span>
+                                </template>
+                                <template x-for="chip in priorityReasonChips(item)" :key="chip.type">
+                                    <span class="px-2 py-0.5 rounded-full text-[10px] font-bold leading-none whitespace-nowrap"
+                                          :class="priorityReasonClass(chip)"
+                                          :title="priorityReasonTitle(chip)"
+                                          x-text="priorityReasonLabel(chip)"></span>
                                 </template>
                                 <template x-if="plexClientIdentifier">
                                     <a :href="plexWebUrl(item.item_id)" target="_blank" class="hover:text-orange-400 underline" x-text="item.title"></a>
@@ -846,6 +868,57 @@
                         year: 'numeric', month: 'short', day: 'numeric',
                         hour: '2-digit', minute: '2-digit'
                     });
+                },
+
+                priorityReasonChips(item) {
+                    const reasons = Array.isArray(item.priority_reasons) ? item.priority_reasons : [];
+                    if (reasons.length === 0) {
+                        return item.is_priority ? [{ type: 'priority', score: item.priority_score || 0 }] : [];
+                    }
+
+                    const chips = [];
+                    const seen = new Set();
+                    for (const reason of reasons) {
+                        const type = reason.type || 'priority';
+                        const key = type === 'hub' && reason.hub ? `${type}:${reason.hub}` : type;
+                        if (seen.has(key)) continue;
+                        seen.add(key);
+                        chips.push({ ...reason, type });
+                    }
+                    return chips;
+                },
+
+                priorityReasonLabel(chip) {
+                    if (chip.type === 'hub' && chip.hub) return chip.hub;
+
+                    const labels = {
+                        on_deck: 'On deck',
+                        next_episode: 'Next up',
+                        hub: 'Hub',
+                        multi_user_overlap: 'Multi-user',
+                        priority: 'Priority'
+                    };
+                    return labels[chip.type] || 'Priority';
+                },
+
+                priorityReasonClass(chip) {
+                    const classes = {
+                        on_deck: 'bg-amber-900/50 text-amber-200 border border-amber-700/60',
+                        next_episode: 'bg-sky-900/50 text-sky-200 border border-sky-700/60',
+                        hub: 'bg-emerald-900/50 text-emerald-200 border border-emerald-700/60',
+                        multi_user_overlap: 'bg-fuchsia-900/50 text-fuchsia-200 border border-fuchsia-700/60',
+                        priority: 'bg-gray-700 text-gray-200 border border-gray-600'
+                    };
+                    return classes[chip.type] || classes.priority;
+                },
+
+                priorityReasonTitle(chip) {
+                    const label = this.priorityReasonLabel(chip);
+                    const score = chip.score ? `score +${chip.score}` : 'priority item';
+                    if (chip.type === 'hub' && chip.hub) return `Hub: ${chip.hub} (${score})`;
+                    if (chip.type === 'next_episode' && chip.position) return `${label}: predicted episode ${chip.position} (${score})`;
+                    if (chip.type === 'multi_user_overlap' && chip.user_count) return `${label}: ${chip.user_count} users (${score})`;
+                    return `${label}: ${score}`;
                 },
 
                 updateLastSyncAgo() {

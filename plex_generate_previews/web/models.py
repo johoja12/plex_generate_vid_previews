@@ -73,6 +73,9 @@ class MediaItem(SQLModel, table=True):
     current_processing_bundle_hash: Optional[str] = None  # To track which part is currently processing
     queue_order: int = Field(default=0) # For manual ordering
     is_priority: bool = Field(default=False) # Priority items (on deck, recently played, adjacent episodes)
+    priority_score: int = Field(default=0) # Ranked automatic priority score
+    priority_reasons: Optional[str] = None # JSON list explaining priority score
+    priority_last_calculated_at: Optional[datetime] = None
     avg_speed: Optional[str] = None # Average processing speed (e.g., "1.23x")
 
     # Metadata
