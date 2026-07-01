@@ -2,12 +2,14 @@ from datetime import datetime, timedelta, timezone
 
 from plex_generate_previews.web.priority import (
     EpisodeRow,
+    HubItem,
     PriorityInfo,
     WatchEvent,
     add_reason,
     is_excluded_hub,
     is_included_hub,
     recency_multiplier,
+    score_hub_items,
     score_next_up_episodes,
 )
 
@@ -165,5 +167,74 @@ def test_old_watch_history_does_not_create_next_up_candidate():
     ]
 
     result = score_next_up_episodes(watches, episodes, missing_rating_keys={502}, now=now)
+
+    assert result == {}
+
+
+def test_hub_direct_movie_or_episode_gets_direct_score():
+    items = [
+        HubItem(rating_key=601, item_type="movie", title="Movie"),
+        HubItem(rating_key=602, item_type="episode", title="Episode"),
+    ]
+
+    result = score_hub_items(
+        "Trending",
+        items,
+        episodes=[],
+        missing_rating_keys={601, 602},
+    )
+
+    assert result[601].score == 300
+    assert result[602].score == 300
+    assert result[601].reasons[0]["hub"] == "Trending"
+
+
+def test_hub_show_promotes_first_three_missing_episodes():
+    items = [HubItem(rating_key=70, item_type="show", title="Show")]
+    episodes = [
+        EpisodeRow(701, 70, 1, 1),
+        EpisodeRow(702, 70, 1, 2),
+        EpisodeRow(703, 70, 1, 3),
+        EpisodeRow(704, 70, 1, 4),
+    ]
+
+    result = score_hub_items(
+        "Popular TV This Year",
+        items,
+        episodes=episodes,
+        missing_rating_keys={701, 702, 703, 704},
+    )
+
+    assert set(result) == {701, 702, 703}
+    assert all(info.score == 250 for info in result.values())
+
+
+def test_hub_season_promotes_first_three_missing_episodes_in_that_season():
+    items = [HubItem(rating_key=8001, item_type="season", title="Season", show_id=80, season_index=2)]
+    episodes = [
+        EpisodeRow(801, 80, 1, 1),
+        EpisodeRow(802, 80, 2, 1),
+        EpisodeRow(803, 80, 2, 2),
+        EpisodeRow(804, 80, 2, 3),
+        EpisodeRow(805, 80, 2, 4),
+    ]
+
+    result = score_hub_items(
+        "Most Watched This Week",
+        items,
+        episodes=episodes,
+        missing_rating_keys={801, 802, 803, 804, 805},
+    )
+
+    assert set(result) == {802, 803, 804}
+
+
+def test_recency_hub_items_are_ignored():
+    result = score_hub_items(
+        "Recently Added Popular Movies",
+        [HubItem(rating_key=901, item_type="movie", title="Movie")],
+        episodes=[],
+        missing_rating_keys={901},
+    )
 
     assert result == {}

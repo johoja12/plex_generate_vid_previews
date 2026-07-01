@@ -38,6 +38,15 @@ class WatchEvent:
     viewed_at: datetime
 
 
+@dataclass(frozen=True)
+class HubItem:
+    rating_key: int
+    item_type: str
+    title: str
+    show_id: int | None = None
+    season_index: int | None = None
+
+
 def add_reason(info: PriorityInfo, reason_type: str, score: int, **metadata: Any) -> None:
     reason = {"type": reason_type, "score": score}
     reason.update({key: value for key, value in metadata.items() if value is not None})
@@ -130,5 +139,51 @@ def score_next_up_episodes(
                 boost,
                 user_count=len(account_ids),
             )
+
+    return result
+
+
+def score_hub_items(
+    hub_title: str,
+    hub_items: list[HubItem],
+    episodes: list[EpisodeRow],
+    missing_rating_keys: set[int],
+) -> dict[int, PriorityInfo]:
+    if not is_included_hub(hub_title):
+        return {}
+
+    episodes_by_show: dict[int, list[EpisodeRow]] = {}
+    episodes_by_season: dict[tuple[int, int], list[EpisodeRow]] = {}
+    for episode in episodes:
+        episodes_by_show.setdefault(episode.show_id, []).append(episode)
+        episodes_by_season.setdefault((episode.show_id, episode.season_index), []).append(episode)
+
+    for grouped in list(episodes_by_show.values()) + list(episodes_by_season.values()):
+        grouped.sort(key=lambda row: (row.season_index, row.episode_index, row.rating_key))
+
+    result: dict[int, PriorityInfo] = {}
+
+    def add_hub_reason(rating_key: int, score: int) -> None:
+        info = result.setdefault(rating_key, PriorityInfo())
+        add_reason(info, "hub", score, hub=hub_title)
+
+    for item in hub_items:
+        if item.item_type in {"movie", "episode"}:
+            if item.rating_key in missing_rating_keys:
+                add_hub_reason(item.rating_key, HUB_DIRECT_SCORE)
+        elif item.item_type == "show":
+            for episode in [
+                row
+                for row in episodes_by_show.get(item.rating_key, [])
+                if row.rating_key in missing_rating_keys
+            ][:3]:
+                add_hub_reason(episode.rating_key, HUB_SHOW_SCORE)
+        elif item.item_type == "season" and item.show_id is not None and item.season_index is not None:
+            for episode in [
+                row
+                for row in episodes_by_season.get((item.show_id, item.season_index), [])
+                if row.rating_key in missing_rating_keys
+            ][:3]:
+                add_hub_reason(episode.rating_key, HUB_SHOW_SCORE)
 
     return result
