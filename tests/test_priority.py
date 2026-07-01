@@ -6,6 +6,7 @@ from plex_generate_previews.web.priority import (
     PriorityInfo,
     WatchEvent,
     add_reason,
+    build_priority_infos,
     is_excluded_hub,
     is_included_hub,
     recency_multiplier,
@@ -238,3 +239,65 @@ def test_recency_hub_items_are_ignored():
     )
 
     assert result == {}
+
+
+def test_build_priority_infos_combines_on_deck_next_up_and_hubs():
+    now = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    episodes = [
+        EpisodeRow(1001, 100, 1, 1),
+        EpisodeRow(1002, 100, 1, 2),
+        EpisodeRow(1003, 100, 1, 3),
+    ]
+    watches = [
+        WatchEvent(
+            account_id=1,
+            rating_key=1001,
+            show_id=100,
+            season_index=1,
+            episode_index=1,
+            viewed_at=now,
+        )
+    ]
+    hub_items_by_title = {
+        "Trending": [HubItem(rating_key=2001, item_type="movie", title="Movie")]
+    }
+
+    result = build_priority_infos(
+        watch_events=watches,
+        episodes=episodes,
+        missing_rating_keys={1002, 1003, 2001, 3001},
+        now=now,
+        hub_items_by_title=hub_items_by_title,
+        on_deck_rating_keys={3001},
+    )
+
+    assert result[3001].score == 900
+    assert result[1002].score == 800
+    assert result[2001].score == 300
+
+
+def test_build_priority_infos_merges_reasons_for_same_item():
+    now = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    episodes = [EpisodeRow(1101, 110, 1, 1), EpisodeRow(1102, 110, 1, 2)]
+    watches = [
+        WatchEvent(
+            account_id=1,
+            rating_key=1101,
+            show_id=110,
+            season_index=1,
+            episode_index=1,
+            viewed_at=now,
+        )
+    ]
+
+    result = build_priority_infos(
+        watch_events=watches,
+        episodes=episodes,
+        missing_rating_keys={1102},
+        now=now,
+        hub_items_by_title={"Popular TV": [HubItem(rating_key=1102, item_type="episode", title="Episode")]},
+        on_deck_rating_keys=set(),
+    )
+
+    assert result[1102].score == 999
+    assert [reason["type"] for reason in result[1102].reasons] == ["next_episode", "hub"]

@@ -1,5 +1,6 @@
 import os
 import pytest
+from datetime import datetime, timezone
 from unittest.mock import MagicMock
 from sqlalchemy import inspect
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -234,3 +235,40 @@ def test_priority_payload_handles_missing_or_invalid_reasons():
 
     assert priority_payload(missing)["priority_reasons"] == []
     assert priority_payload(invalid)["priority_reasons"] == []
+
+
+def test_detect_priority_items_returns_scored_priority_infos(monkeypatch):
+    scheduler = Scheduler()
+    scheduler.config = MagicMock()
+    scheduler.config.plex_config_folder = "/plex"
+
+    now = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    monkeypatch.setattr("plex_generate_previews.web.scheduler.datetime", MagicMock(utcnow=lambda: now))
+    monkeypatch.setattr(
+        scheduler,
+        "_read_priority_watch_events",
+        lambda history_limit: [
+            MagicMock(
+                account_id=1,
+                rating_key=1,
+                show_id=10,
+                season_index=1,
+                episode_index=1,
+                viewed_at=now,
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_read_priority_episode_rows",
+        lambda: [
+            MagicMock(rating_key=1, show_id=10, season_index=1, episode_index=1),
+            MagicMock(rating_key=2, show_id=10, season_index=1, episode_index=2),
+        ],
+    )
+    monkeypatch.setattr(scheduler, "_collect_priority_hub_items", lambda plex: {})
+    monkeypatch.setattr(scheduler, "_collect_on_deck_rating_keys", lambda plex: set())
+
+    result = scheduler.detect_priority_items(MagicMock(), missing_rating_keys={2})
+
+    assert result[2].score == 800

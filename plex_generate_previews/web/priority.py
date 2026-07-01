@@ -187,3 +187,56 @@ def score_hub_items(
                 add_hub_reason(episode.rating_key, HUB_SHOW_SCORE)
 
     return result
+
+
+def merge_priority_info(
+    target: dict[int, PriorityInfo],
+    source: dict[int, PriorityInfo],
+) -> dict[int, PriorityInfo]:
+    for rating_key, source_info in source.items():
+        target_info = target.setdefault(rating_key, PriorityInfo())
+        for reason in source_info.reasons:
+            reason_type = reason.get("type", "unknown")
+            score = int(reason.get("score", 0))
+            metadata = {key: value for key, value in reason.items() if key not in {"type", "score"}}
+            add_reason(target_info, reason_type, score, **metadata)
+    return target
+
+
+def score_on_deck_items(
+    on_deck_rating_keys: set[int],
+    missing_rating_keys: set[int],
+) -> dict[int, PriorityInfo]:
+    result: dict[int, PriorityInfo] = {}
+    for rating_key in on_deck_rating_keys & missing_rating_keys:
+        info = result.setdefault(rating_key, PriorityInfo())
+        add_reason(info, "on_deck", ON_DECK_SCORE)
+    return result
+
+
+def build_priority_infos(
+    watch_events: list[WatchEvent],
+    episodes: list[EpisodeRow],
+    missing_rating_keys: set[int],
+    now: datetime,
+    hub_items_by_title: dict[str, list[HubItem]] | None = None,
+    on_deck_rating_keys: set[int] | None = None,
+) -> dict[int, PriorityInfo]:
+    result: dict[int, PriorityInfo] = {}
+    merge_priority_info(
+        result,
+        score_next_up_episodes(watch_events, episodes, missing_rating_keys, now),
+    )
+
+    for hub_title, hub_items in (hub_items_by_title or {}).items():
+        merge_priority_info(
+            result,
+            score_hub_items(hub_title, hub_items, episodes, missing_rating_keys),
+        )
+
+    merge_priority_info(
+        result,
+        score_on_deck_items(on_deck_rating_keys or set(), missing_rating_keys),
+    )
+
+    return result

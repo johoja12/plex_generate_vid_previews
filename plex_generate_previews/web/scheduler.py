@@ -2,6 +2,7 @@ import threading
 import time
 import logging
 import json
+import sqlite3
 from typing import List, Tuple, Optional
 from itertools import chain
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -15,7 +16,15 @@ from ..gpu_detection import detect_all_gpus
 from ..utils import setup_working_directory, sanitize_path
 from .database import engine, get_session
 from .models import MediaItem, PreviewStatus, MediaType, AppSettings
-from .priority import PriorityInfo, RECENT_WATCHED_SCORE, add_reason
+from .priority import (
+    EpisodeRow,
+    HubItem,
+    PriorityInfo,
+    WatchEvent,
+    RECENT_WATCHED_SCORE,
+    add_reason,
+    build_priority_infos,
+)
 import os
 from datetime import datetime, timezone, timedelta
 
@@ -1300,53 +1309,192 @@ class Scheduler:
             logger.error(traceback.format_exc())
             return {"error": str(e)}
 
-    def detect_priority_items(self, plex) -> set:
+    def detect_priority_items(self, plex, missing_rating_keys: Optional[set[int]] = None) -> dict[int, PriorityInfo]:
         """
-        Detect priority items from Plex (single or multi-user mode):
-        1. On-deck items (up next to watch)
-        2. Recently played items (last N per user)
-        3. Adjacent episodes (all episodes in same season as recently played)
-
-        When multi-user mode is enabled, collects priority items from all users on the server.
-
-        Args:
-            plex: PlexServer instance
-
-        Returns:
-            set: Set of Plex rating keys (int) that are priority items
+        Detect scored priority items from Plex DB watch history and selected Plex hubs.
         """
-        priority_keys = set()
-
-        # Check if multi-user priority is enabled
-        enable_multi_user = False
         history_limit = 50
         try:
             with Session(engine) as session:
                 settings = session.get(AppSettings, 1)
                 if settings:
-                    enable_multi_user = settings.enable_multi_user_priority
                     history_limit = settings.priority_history_limit
         except Exception as e:
-            logger.debug(f"Could not load multi-user priority settings: {e}")
+            logger.debug(f"Could not load priority settings: {e}")
 
         try:
-            if enable_multi_user:
-                # Multi-user mode: Get priority items for all users on the server
-                logger.info("Multi-user priority mode enabled - checking all users on server")
-                priority_keys = self._detect_priority_items_all_users(plex, history_limit)
-            else:
-                # Single-user mode: Get priority items for current user only
-                logger.debug("Single-user priority mode - checking current authenticated user only")
-                priority_keys = self._detect_priority_items_single_user(plex, history_limit)
+            if missing_rating_keys is None:
+                with Session(engine) as session:
+                    missing_rating_keys = set(
+                        session.exec(
+                            select(MediaItem.id).where(MediaItem.status == PreviewStatus.MISSING)
+                        ).all()
+                    )
 
-            logger.info(f"Detected {len(priority_keys)} priority items total")
-            return priority_keys
+            priority_infos = build_priority_infos(
+                watch_events=self._read_priority_watch_events(history_limit),
+                episodes=self._read_priority_episode_rows(),
+                missing_rating_keys=missing_rating_keys,
+                now=datetime.utcnow().replace(tzinfo=timezone.utc),
+                hub_items_by_title=self._collect_priority_hub_items(plex),
+                on_deck_rating_keys=self._collect_on_deck_rating_keys(plex),
+            )
+
+            logger.info(f"Detected {len(priority_infos)} scored priority items total")
+            return priority_infos
 
         except Exception as e:
             logger.error(f"Priority detection failed: {e}")
             import traceback
             logger.error(traceback.format_exc())
+            return {}
+
+    def _plex_db_path(self) -> str:
+        return os.path.join(
+            self.config.plex_config_folder,
+            "Plug-in Support",
+            "Databases",
+            "com.plexapp.plugins.library.db",
+        )
+
+    def _read_priority_watch_events(self, history_limit: int) -> list[WatchEvent]:
+        db_path = self._plex_db_path()
+        conn = sqlite3.connect(db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT account_id, rating_key, show_id, season_index, episode_index, viewed_at
+                FROM (
+                    SELECT
+                        miv.account_id AS account_id,
+                        ep.id AS rating_key,
+                        show.id AS show_id,
+                        season.'index' AS season_index,
+                        ep.'index' AS episode_index,
+                        miv.viewed_at AS viewed_at,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY miv.account_id
+                            ORDER BY miv.viewed_at DESC
+                        ) AS row_num
+                    FROM metadata_item_views miv
+                    JOIN metadata_items ep ON miv.guid = ep.guid
+                    JOIN metadata_items season ON ep.parent_id = season.id
+                    JOIN metadata_items show ON season.parent_id = show.id
+                    WHERE miv.account_id IS NOT NULL
+                    AND ep.metadata_type = 4
+                )
+                WHERE row_num <= ?
+                ORDER BY account_id, viewed_at DESC
+                """,
+                (history_limit,),
+            )
+            return [
+                WatchEvent(
+                    account_id=int(account_id),
+                    rating_key=int(rating_key),
+                    show_id=int(show_id),
+                    season_index=int(season_index or 0),
+                    episode_index=int(episode_index or 0),
+                    viewed_at=datetime.fromtimestamp(int(viewed_at), tz=timezone.utc),
+                )
+                for account_id, rating_key, show_id, season_index, episode_index, viewed_at in cursor.fetchall()
+            ]
+        finally:
+            conn.close()
+
+    def _read_priority_episode_rows(self) -> list[EpisodeRow]:
+        db_path = self._plex_db_path()
+        conn = sqlite3.connect(db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT ep.id, show.id, season.'index', ep.'index'
+                FROM metadata_items ep
+                JOIN metadata_items season ON ep.parent_id = season.id
+                JOIN metadata_items show ON season.parent_id = show.id
+                WHERE ep.metadata_type = 4
+                """
+            )
+            return [
+                EpisodeRow(
+                    rating_key=int(rating_key),
+                    show_id=int(show_id),
+                    season_index=int(season_index or 0),
+                    episode_index=int(episode_index or 0),
+                )
+                for rating_key, show_id, season_index, episode_index in cursor.fetchall()
+            ]
+        finally:
+            conn.close()
+
+    def _collect_on_deck_rating_keys(self, plex) -> set[int]:
+        try:
+            return {
+                int(item.ratingKey)
+                for item in retry_plex_call(plex.library.onDeck)
+                if getattr(item, "ratingKey", None) is not None
+            }
+        except Exception as e:
+            logger.warning(f"Failed to collect on-deck priority items: {e}")
             return set()
+
+    def _collect_priority_hub_items(self, plex) -> dict[str, list[HubItem]]:
+        hub_items_by_title: dict[str, list[HubItem]] = {}
+        try:
+            sections = retry_plex_call(plex.library.sections)
+        except Exception as e:
+            logger.warning(f"Failed to list Plex sections for hub priority: {e}")
+            return hub_items_by_title
+
+        for section in sections:
+            try:
+                hubs = retry_plex_call(section.hubs)
+            except Exception as e:
+                logger.warning(f"Failed to read hubs for {getattr(section, 'title', 'unknown')}: {e}")
+                continue
+
+            for hub in hubs:
+                hub_title = getattr(hub, "title", "") or ""
+                items_attr = getattr(hub, "items", None)
+                try:
+                    raw_items = items_attr() if callable(items_attr) else (items_attr or [])
+                except Exception as e:
+                    logger.warning(f"Failed to read hub items for {hub_title}: {e}")
+                    continue
+
+                converted_items = []
+                for item in raw_items[:100]:
+                    try:
+                        rating_key = int(getattr(item, "ratingKey"))
+                    except (TypeError, ValueError):
+                        continue
+
+                    item_type = getattr(item, "type", "")
+                    show_id = None
+                    season_index = None
+                    if item_type == "season":
+                        try:
+                            show_id = int(getattr(item, "parentRatingKey"))
+                        except (TypeError, ValueError):
+                            show_id = None
+                        season_index = getattr(item, "index", None)
+
+                    converted_items.append(
+                        HubItem(
+                            rating_key=rating_key,
+                            item_type=item_type,
+                            title=getattr(item, "title", ""),
+                            show_id=show_id,
+                            season_index=season_index,
+                        )
+                    )
+
+                if converted_items:
+                    hub_items_by_title.setdefault(hub_title, []).extend(converted_items)
+
+        return hub_items_by_title
 
     def _detect_priority_items_single_user(self, plex, history_limit: int) -> set:
         """
@@ -1741,10 +1889,6 @@ class Scheduler:
 
             sections = get_library_sections(plex, self.config, database_only=use_database_sync)
 
-            # Step 2.5: Detect priority items from Plex
-            priority_item_keys = self.detect_priority_items(plex)
-            logger.debug(f"Priority detection complete: {len(priority_item_keys)} items")
-
             # Collect all items from Plex into a list
             all_items = []
             plex_item_ids = set()
@@ -1754,6 +1898,15 @@ class Scheduler:
                     all_items.append((section.title, item_key, title, item_type, bundle_hash, added_at))
 
             logger.info(f"Fetched {len(all_items)} items from Plex in {time.time() - plex_fetch_start:.2f}s")
+
+            # Step 2.5: Detect scored priority items from Plex
+            missing_rating_keys = {
+                int(item_key)
+                for _, item_key, _, _, bundle_hash, _ in all_items
+                if not bundle_hash or bundle_hash not in bundle_hash_map
+            }
+            priority_item_keys = self.detect_priority_items(plex, missing_rating_keys=missing_rating_keys)
+            logger.debug(f"Priority detection complete: {len(priority_item_keys)} items")
 
             # Step 3: Batch query all media parts at once
             logger.info("Batch querying media parts from Plex database...")
