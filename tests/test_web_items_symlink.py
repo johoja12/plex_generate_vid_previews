@@ -123,3 +123,27 @@ def test_dashboard_renders_priority_stat_card():
 
     assert "Priority" in html
     assert 'x-text="stats.priority"' in html
+
+
+def test_get_items_priority_pagination_uses_total_matching_rows(client, session):
+    for index in range(120):
+        session.add(
+            MediaItem(
+                id=1000 + index,
+                title=f"Priority Movie {index}",
+                library_name="Movies",
+                media_type=MediaType.MOVIE,
+                status=PreviewStatus.MISSING,
+                is_priority=True,
+                priority_score=300,
+            )
+        )
+    session.commit()
+
+    response = client.get("/api/items?show_priority_only=true&page=1&limit=50")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["items"]) == 50
+    assert data["total"] == 120
+    assert data["pages"] == 3
