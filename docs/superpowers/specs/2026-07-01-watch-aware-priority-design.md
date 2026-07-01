@@ -30,7 +30,7 @@ PlexAPI hub access was verified against the configured server:
 
 - Rank automatic priority items by likely next watch, not by a broad boolean flag.
 - Prioritize the next 3 unwatched episodes after a user's latest watched episode in a show/season.
-- Use Plex hubs for both movies and TV, but only `trending`, `popular`, and `most watched` hubs, not broad recently-added or recently-released hubs.
+- Use Plex hubs for both movies and TV, but only `trending`, `popular`, `most watched`, and `favorite`/`favourite` hubs, not broad recently-added or recently-released hubs.
 - Preserve manual queue controls as the strongest user intent.
 - Keep priority explainable in logs and API/UI data.
 - Avoid large Plex API fan-out during normal sync.
@@ -92,6 +92,8 @@ Include hub names matching these terms:
 - `trending`
 - `popular`
 - `most watched`
+- `favorite`
+- `favourite`
 
 Exclude broad recency hub names matching:
 
@@ -100,7 +102,7 @@ Exclude broad recency hub names matching:
 
 Hub scoring should read from `section.hubs()` only. `managedHubs()` can be left for future diagnostics because it did not return populated item lists in testing.
 
-Do not include `start watching`, `rediscover`, `top unwatched`, `favorite`, or `favourite` in the first implementation. Those hubs are broader discovery signals and should not affect preview queue priority until there is evidence they predict near-term playback.
+Do not include `start watching`, `rediscover`, or `top unwatched` in the first implementation. Those hubs are broader discovery signals and should not affect preview queue priority until there is evidence they predict near-term playback.
 
 For movie libraries, hub item rating keys map directly to `MediaItem.id`.
 
