@@ -22,15 +22,15 @@ PlexAPI hub access was verified against the configured server:
 
 - `LibrarySection.hubs()` returns populated hubs for movie and TV libraries.
 - `LibrarySection.managedHubs()` is available, but returned hub definitions without item lists in the tested environment.
-- Movie hubs such as `Trending`, `Most Watched This Week`, `Most Watched This Month`, `Most Watched This Year`, `Popular`, and `Top Unwatched Movies` return movie rating keys that map directly to queueable `MediaItem` rows.
-- TV curated hubs such as `Start Watching`, `Rediscover`, `Trending TV Right Now`, and `Popular TV This Year` return show rating keys, not episode rating keys.
+- Movie hubs such as `Trending`, `Most Watched This Week`, `Most Watched This Month`, `Most Watched This Year`, and `Popular` return movie rating keys that map directly to queueable `MediaItem` rows.
+- TV curated hubs such as `Trending TV Right Now` and `Popular TV This Year` return show rating keys, not episode rating keys.
 - Broad recency hubs such as `Recently Added`, `Recently Released Movies`, and `Recently Released Episodes` can be very large and should not receive a generic priority boost.
 
 ## Goals
 
 - Rank automatic priority items by likely next watch, not by a broad boolean flag.
 - Prioritize the next 3 unwatched episodes after a user's latest watched episode in a show/season.
-- Use Plex hubs for both movies and TV, but only curated/discovery hubs, not broad recently-added or recently-released hubs.
+- Use Plex hubs for both movies and TV, but only `trending`, `popular`, and `most watched` hubs, not broad recently-added or recently-released hubs.
 - Preserve manual queue controls as the strongest user intent.
 - Keep priority explainable in logs and API/UI data.
 - Avoid large Plex API fan-out during normal sync.
@@ -87,16 +87,11 @@ Recency should affect watch-history-derived signals. Start with a simple decay:
 
 ## Hub Selection
 
-Include curated/discovery hub names matching these terms:
+Include hub names matching these terms:
 
 - `trending`
 - `popular`
 - `most watched`
-- `start watching`
-- `rediscover`
-- `top unwatched`
-- `favorite`
-- `favourite`
 
 Exclude broad recency hub names matching:
 
@@ -104,6 +99,8 @@ Exclude broad recency hub names matching:
 - `recently released`
 
 Hub scoring should read from `section.hubs()` only. `managedHubs()` can be left for future diagnostics because it did not return populated item lists in testing.
+
+Do not include `start watching`, `rediscover`, `top unwatched`, `favorite`, or `favourite` in the first implementation. Those hubs are broader discovery signals and should not affect preview queue priority until there is evidence they predict near-term playback.
 
 For movie libraries, hub item rating keys map directly to `MediaItem.id`.
 
