@@ -1153,15 +1153,12 @@ async def get_items(
                 **priority_payload(item),
             })
 
-    # Update total count to reflect expanded parts
-    expanded_total = len(expanded_items)
-
     return {
         "items": expanded_items,
-        "total": expanded_total,
+        "total": total,
         "page": page,
         "limit": limit,
-        "pages": (expanded_total + limit - 1) // limit if limit > 0 else 1
+        "pages": (total + limit - 1) // limit if limit > 0 else 1
     }
 
 @app.get("/api/items/processing")
