@@ -1,6 +1,10 @@
 import os
 import pytest
 from unittest.mock import MagicMock
+from sqlalchemy import inspect
+from sqlmodel import SQLModel, create_engine
+from sqlmodel.pool import StaticPool
+from plex_generate_previews.web.models import MediaItem
 from plex_generate_previews.web.scheduler import Scheduler
 from plex_generate_previews.config import Config
 
@@ -75,3 +79,18 @@ def test_scan_filesystem_for_bifs_with_stripped_hash_bif(temp_dir, mock_config):
 
     assert bug_full_bundle_hash in bundle_hash_map_retest
     assert bundle_hash_map_retest[bug_full_bundle_hash] == bug_mock_bif_path
+
+
+def test_mediaitem_has_priority_score_metadata_columns():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+
+    columns = {column["name"] for column in inspect(engine).get_columns("mediaitem")}
+
+    assert "priority_score" in columns
+    assert "priority_reasons" in columns
+    assert "priority_last_calculated_at" in columns
