@@ -2,6 +2,7 @@ import os
 import requests
 import uuid
 import hashlib
+import json
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Depends, Form, HTTPException, status, Cookie, Body
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
@@ -22,6 +23,24 @@ from passlib.context import CryptContext
 
 class MediaItemRead(MediaItem):
     is_bundle_hash_missing: bool = False
+
+
+def priority_payload(item: MediaItem) -> dict:
+    reasons = []
+    if item.priority_reasons:
+        try:
+            parsed = json.loads(item.priority_reasons)
+            if isinstance(parsed, list):
+                reasons = parsed
+        except (TypeError, json.JSONDecodeError):
+            reasons = []
+
+    return {
+        "is_priority": item.is_priority,
+        "priority_score": item.priority_score,
+        "priority_reasons": reasons,
+    }
+
 
 # Configuration
 SECRET_KEY = os.environ.get("SECRET_KEY", "change_me_in_production")
@@ -1078,7 +1097,7 @@ async def get_items(
                         "updated_at": item.updated_at,
                         "error_message": part_error,
                         "is_multi_part": len(parts) > 1,
-                        "is_priority": item.is_priority  # Priority flag
+                        **priority_payload(item),
                     })
             except (json.JSONDecodeError, Exception) as e:
                 logger.error(f"Error parsing media_parts_info for item {item.id}: {e}")
@@ -1100,7 +1119,7 @@ async def get_items(
                     "updated_at": item.updated_at,
                     "error_message": item.error_message,
                     "is_multi_part": False,
-                    "is_priority": item.is_priority
+                    **priority_payload(item),
                 })
         else:
             # No parts info, use item directly
@@ -1129,7 +1148,7 @@ async def get_items(
                 "updated_at": item.updated_at,
                 "error_message": item.error_message,
                 "is_multi_part": False,
-                "is_priority": item.is_priority
+                **priority_payload(item),
             })
 
     # Update total count to reflect expanded parts
@@ -1160,7 +1179,7 @@ async def get_processing_items(
             (MediaItem.status == PreviewStatus.PROCESSING, 0),
             else_=1
         ),
-        MediaItem.is_priority.desc(),
+        MediaItem.priority_score.desc(),
         MediaItem.queue_order.asc()
     ).limit(10)  # Limit to 10 items for the UI
 
@@ -1195,7 +1214,7 @@ async def get_processing_items(
             "status": item.status,
             "progress": item.progress,
             "avg_speed": item.avg_speed,
-            "is_priority": item.is_priority,
+            **priority_payload(item),
             "file_path": file_path,
             "symlink_target": symlink_target
         })
@@ -1261,4 +1280,3 @@ async def trigger_sync(user: str = Depends(login_required)):
 def start():
     import uvicorn
     uvicorn.run("plex_generate_previews.web.main:app", host="0.0.0.0", port=8008, reload=False, access_log=False)
-

@@ -6,6 +6,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 from plex_generate_previews.web.models import MediaItem, MediaType, PreviewStatus
 from plex_generate_previews.web.priority import PriorityInfo, add_reason
+from plex_generate_previews.web.main import priority_payload
 from plex_generate_previews.web.scheduler import Scheduler
 from plex_generate_previews.config import Config
 
@@ -196,3 +197,40 @@ def test_clear_completed_priority_metadata_clears_all_priority_fields():
     assert item.priority_score == 0
     assert item.priority_reasons is None
     assert item.priority_last_calculated_at is None
+
+
+def test_priority_payload_exposes_score_and_reasons():
+    item = MediaItem(
+        id=1,
+        title="Episode",
+        library_name="TV",
+        media_type=MediaType.EPISODE,
+        is_priority=True,
+        priority_score=800,
+        priority_reasons='[{"type":"next_episode","score":800}]',
+    )
+
+    assert priority_payload(item) == {
+        "is_priority": True,
+        "priority_score": 800,
+        "priority_reasons": [{"type": "next_episode", "score": 800}],
+    }
+
+
+def test_priority_payload_handles_missing_or_invalid_reasons():
+    missing = MediaItem(
+        id=1,
+        title="Missing",
+        library_name="TV",
+        media_type=MediaType.EPISODE,
+    )
+    invalid = MediaItem(
+        id=2,
+        title="Invalid",
+        library_name="TV",
+        media_type=MediaType.EPISODE,
+        priority_reasons="not-json",
+    )
+
+    assert priority_payload(missing)["priority_reasons"] == []
+    assert priority_payload(invalid)["priority_reasons"] == []
