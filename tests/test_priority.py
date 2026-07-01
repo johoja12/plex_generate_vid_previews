@@ -301,3 +301,23 @@ def test_build_priority_infos_merges_reasons_for_same_item():
 
     assert result[1102].score == 999
     assert [reason["type"] for reason in result[1102].reasons] == ["next_episode", "hub"]
+
+
+def test_build_priority_infos_caps_hub_contribution_to_one_reason_per_item():
+    now = datetime(2026, 7, 1, tzinfo=timezone.utc)
+
+    result = build_priority_infos(
+        watch_events=[],
+        episodes=[],
+        missing_rating_keys={1201},
+        now=now,
+        hub_items_by_title={
+            "Trending": [HubItem(rating_key=1201, item_type="movie", title="Movie")],
+            "Popular": [HubItem(rating_key=1201, item_type="movie", title="Movie")],
+            "Most Watched This Week": [HubItem(rating_key=1201, item_type="movie", title="Movie")],
+        },
+        on_deck_rating_keys=set(),
+    )
+
+    assert result[1201].score == 300
+    assert [reason["type"] for reason in result[1201].reasons] == ["hub"]

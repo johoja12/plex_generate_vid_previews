@@ -228,11 +228,16 @@ def build_priority_infos(
         score_next_up_episodes(watch_events, episodes, missing_rating_keys, now),
     )
 
+    hub_seen: set[int] = set()
     for hub_title, hub_items in (hub_items_by_title or {}).items():
-        merge_priority_info(
-            result,
-            score_hub_items(hub_title, hub_items, episodes, missing_rating_keys),
-        )
+        hub_scores = score_hub_items(hub_title, hub_items, episodes, missing_rating_keys)
+        filtered_hub_scores = {
+            rating_key: info
+            for rating_key, info in hub_scores.items()
+            if rating_key not in hub_seen
+        }
+        hub_seen.update(filtered_hub_scores)
+        merge_priority_info(result, filtered_hub_scores)
 
     merge_priority_info(
         result,
