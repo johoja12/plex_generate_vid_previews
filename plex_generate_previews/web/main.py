@@ -102,11 +102,11 @@ async def index(request: Request, user: Optional[str] = Depends(get_current_user
     if not scheduler.config:
         return RedirectResponse(url="/setup")
 
-    return templates.TemplateResponse("index.html", {"request": request, "user": user})
+    return templates.TemplateResponse(request, "index.html", {"user": user})
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
-    return templates.TemplateResponse("login.html", {"request": request})
+    return templates.TemplateResponse(request, "login.html")
 
 @app.post("/login")
 async def login(
@@ -152,7 +152,7 @@ async def logout():
 async def settings_page(request: Request, user: Optional[str] = Depends(get_current_user)):
     if not user:
         return RedirectResponse(url="/login")
-    return templates.TemplateResponse("settings.html", {"request": request, "user": user})
+    return templates.TemplateResponse(request, "settings.html", {"user": user})
 
 @app.get("/api/settings")
 async def get_settings(session: Session = Depends(get_session), user: str = Depends(login_required)):
@@ -767,7 +767,7 @@ async def resume_queue(user: str = Depends(login_required)):
 async def setup_page(request: Request, user: Optional[str] = Depends(get_current_user)):
     if not user:
         return RedirectResponse(url="/login")
-    return templates.TemplateResponse("setup.html", {"request": request})
+    return templates.TemplateResponse(request, "setup.html")
 
 @app.post("/api/setup/plex/pin")
 async def get_plex_pin(user: str = Depends(login_required)):
