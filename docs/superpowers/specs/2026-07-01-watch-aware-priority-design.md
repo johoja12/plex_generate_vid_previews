@@ -30,6 +30,7 @@ PlexAPI hub access was verified against the configured server:
 
 - Rank automatic priority items by likely next watch, not by a broad boolean flag.
 - Prioritize the next 3 unwatched episodes after a user's latest watched episode in a show/season.
+- Predict next-up episodes independently per user when multi-user priority is enabled, then merge those predictions into one queue score.
 - Use Plex hubs for both movies and TV, but only `trending`, `popular`, `most watched`, and `favorite`/`favourite` hubs, not broad recently-added or recently-released hubs.
 - Preserve manual queue controls as the strongest user intent.
 - Keep priority explainable in logs and API/UI data.
@@ -84,6 +85,20 @@ Recency should affect watch-history-derived signals. Start with a simple decay:
 - viewed within 7 days: 80 percent
 - viewed within 30 days: 50 percent
 - older than 30 days: ignore for predictive scoring
+
+## Multi-User Next-Up Prediction
+
+When multi-user priority is enabled, the calculator should build next-up candidates per user, not just from the server owner's current on-deck list.
+
+For each account with recent episode watch history:
+
+1. Find the latest watched episode per show/season.
+2. Find the next 3 missing queueable episodes after that watched episode, ordered by season and episode index.
+3. Add a `next_episode` reason that includes the account id or an anonymized user reference.
+
+The same episode may be predicted for multiple users. In that case, combine the reasons and apply the multi-user overlap boost. Different users watching different shows should produce separate next-up candidates, so one user's active series does not hide another user's likely next episode.
+
+Plex's explicit on-deck/continue-watching items should still be used when available, but they should not be the only multi-user signal. The Plex DB watch-history path is the source of truth for per-user next-episode prediction because it includes `account_id`.
 
 ## Hub Selection
 
@@ -176,6 +191,8 @@ Add focused unit tests for the priority calculator:
 - Curated hub shows promote only first 3 missing episodes.
 - Broad recently-added/released hubs are ignored.
 - Multi-user overlap boosts score but respects the cap.
+- Different users' latest watched episodes produce independent next-3 candidate sets.
+- Shared next-up candidates from multiple users combine reasons and receive an overlap boost.
 - Old watch history is ignored by recency decay.
 
 Add scheduler tests for:
