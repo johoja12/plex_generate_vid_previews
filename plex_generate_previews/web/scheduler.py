@@ -1,6 +1,7 @@
 import threading
 import time
 import logging
+import json
 from typing import List, Tuple, Optional
 from itertools import chain
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -14,6 +15,7 @@ from ..gpu_detection import detect_all_gpus
 from ..utils import setup_working_directory, sanitize_path
 from .database import engine, get_session
 from .models import MediaItem, PreviewStatus, MediaType, AppSettings
+from .priority import PriorityInfo, RECENT_WATCHED_SCORE, add_reason
 import os
 from datetime import datetime, timezone, timedelta
 
@@ -245,6 +247,55 @@ class Scheduler:
         self._rate_limit_message = ""
         self._rate_limit_exempt_paths_cache = []  # Cache for exempt paths
         self._rate_limit_exempt_paths_cache_time = 0  # Timestamp of last cache update
+
+    @staticmethod
+    def _priority_order_by():
+        return (
+            MediaItem.priority_score.desc(),
+            MediaItem.updated_at.desc(),
+            MediaItem.queue_order.asc(),
+        )
+
+    def _apply_priority_info_to_item(self, item: MediaItem, priority_info: Optional[PriorityInfo]) -> bool:
+        calculated_at = datetime.utcnow()
+        if priority_info and priority_info.score > 0:
+            priority_reasons = json.dumps(priority_info.reasons, separators=(",", ":"))
+            changed = (
+                item.priority_score != priority_info.score
+                or item.priority_reasons != priority_reasons
+                or not item.is_priority
+            )
+            item.is_priority = True
+            item.priority_score = priority_info.score
+            item.priority_reasons = priority_reasons
+            item.priority_last_calculated_at = calculated_at
+            return changed
+
+        changed = (
+            item.is_priority
+            or item.priority_score != 0
+            or item.priority_reasons is not None
+            or item.priority_last_calculated_at is not None
+        )
+        item.is_priority = False
+        item.priority_score = 0
+        item.priority_reasons = None
+        item.priority_last_calculated_at = None
+        return changed
+
+    def _clear_completed_priority_metadata(self, item: MediaItem) -> bool:
+        if item.status != PreviewStatus.COMPLETED:
+            return False
+        return self._apply_priority_info_to_item(item, None)
+
+    def _priority_info_for_key(self, priority_items, item_key: int) -> Optional[PriorityInfo]:
+        if hasattr(priority_items, "get"):
+            return priority_items.get(item_key)
+        if item_key in priority_items:
+            info = PriorityInfo()
+            add_reason(info, "legacy_priority", RECENT_WATCHED_SCORE)
+            return info
+        return None
 
     def trigger_sync(self):
         self.force_sync = True
@@ -1568,7 +1619,10 @@ class Scheduler:
                 media_parts_info=media_parts_json,
                 added_at=added_at if added_at else datetime.utcnow(),
                 error_message="Media file not found (broken symlink or deleted)" if not media_exists else None,
-                is_priority=int(item_key) in priority_item_keys
+            )
+            self._apply_priority_info_to_item(
+                new_item,
+                self._priority_info_for_key(priority_item_keys, int(item_key)),
             )
 
             stat_type = 'movies_added' if item_type == 'movie' else 'episodes_added'
@@ -1578,12 +1632,11 @@ class Scheduler:
             item_updated = False
 
             # Update priority status
-            expected_priority = int(item_key) in priority_item_keys
-            if db_item.is_priority != expected_priority:
-                db_item.is_priority = expected_priority
+            priority_info = self._priority_info_for_key(priority_item_keys, int(item_key))
+            if self._apply_priority_info_to_item(db_item, priority_info):
                 item_updated = True
-                if expected_priority:
-                    logger.debug(f"Item {item_key} ({title}) marked as priority")
+                if priority_info:
+                    logger.debug(f"Item {item_key} ({title}) marked as priority score={priority_info.score}")
 
             # Update hash if missing
             if not db_item.bundle_hash and bundle_hash:
@@ -1875,12 +1928,12 @@ class Scheduler:
         with Session(engine) as session:
             # Prioritize: Status is MISSING only (not QUEUED - those are already in the worker queue)
             # Sort by:
-            # 1. is_priority desc (Priority items first: on-deck, recently played, adjacent episodes)
+            # 1. priority_score desc (ranked automatic priority)
             # 2. updated_at desc (Most recently changed first)
             # 3. queue_order asc (Manual prioritization)
             statement = select(MediaItem).where(
                 MediaItem.status == PreviewStatus.MISSING
-            ).order_by(MediaItem.is_priority.desc(), MediaItem.updated_at.desc(), MediaItem.queue_order.asc()).limit(fetch_limit)
+            ).order_by(*self._priority_order_by()).limit(fetch_limit)
 
             items = session.exec(statement).all()
 
@@ -1954,7 +2007,7 @@ class Scheduler:
                 # Sort by priority first, then updated_at, then manual queue_order
                 statement = select(MediaItem).where(
                     MediaItem.status == PreviewStatus.MISSING
-                ).order_by(MediaItem.is_priority.desc(), MediaItem.updated_at.desc(), MediaItem.queue_order.asc()).limit(current_fetch_limit)
+                ).order_by(*self._priority_order_by()).limit(current_fetch_limit)
 
                 items = session.exec(statement).all()
 
@@ -2047,10 +2100,9 @@ class Scheduler:
                         item.status = PreviewStatus.QUEUED
                         session.add(item)
 
-                    # Clear priority flag for completed items to prevent stale priority data
-                    if item.status == PreviewStatus.COMPLETED and item.is_priority:
-                        logger.debug(f"Post-processing: Clearing priority flag for completed item {item_id} ({item.title})")
-                        item.is_priority = False
+                    # Clear priority metadata for completed items to prevent stale priority data
+                    if self._clear_completed_priority_metadata(item):
+                        logger.debug(f"Post-processing: Clearing priority metadata for completed item {item_id} ({item.title})")
                         session.add(item)
             session.commit()
 
