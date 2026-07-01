@@ -8,6 +8,7 @@ from sqlmodel.pool import StaticPool
 from plex_generate_previews.web.models import MediaItem, MediaType, PreviewStatus
 from plex_generate_previews.web.priority import PriorityInfo, add_reason
 from plex_generate_previews.web.main import priority_payload
+from plex_generate_previews.web import scheduler as scheduler_module
 from plex_generate_previews.web.scheduler import Scheduler
 from plex_generate_previews.config import Config
 
@@ -272,3 +273,58 @@ def test_detect_priority_items_returns_scored_priority_infos(monkeypatch):
     result = scheduler.detect_priority_items(MagicMock(), missing_rating_keys={2})
 
     assert result[2].score == 800
+
+
+def test_refresh_priority_metadata_updates_existing_pending_rows(monkeypatch):
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        pending = MediaItem(
+            id=2,
+            title="Next Episode",
+            library_name="TV",
+            media_type=MediaType.EPISODE,
+            status=PreviewStatus.MISSING,
+            is_priority=True,
+        )
+        completed = MediaItem(
+            id=3,
+            title="Old Completed",
+            library_name="TV",
+            media_type=MediaType.EPISODE,
+            status=PreviewStatus.COMPLETED,
+            is_priority=True,
+            priority_score=100,
+            priority_reasons='[{"type":"priority","score":100}]',
+        )
+        session.add(pending)
+        session.add(completed)
+        session.commit()
+
+    scheduler = Scheduler()
+    info = PriorityInfo()
+    add_reason(info, "next_episode", 800, account_id=1)
+
+    monkeypatch.setattr(scheduler_module, "engine", engine)
+    monkeypatch.setattr(
+        scheduler,
+        "detect_priority_items",
+        lambda plex, missing_rating_keys: {2: info},
+    )
+
+    summary = scheduler.refresh_priority_metadata(plex=MagicMock())
+
+    assert summary == {"candidates": 1, "scored": 1, "updated": 2}
+    with Session(engine) as session:
+        pending = session.get(MediaItem, 2)
+        completed = session.get(MediaItem, 3)
+
+    assert pending.priority_score == 800
+    assert pending.priority_reasons == '[{"type":"next_episode","score":800,"account_id":1}]'
+    assert completed.is_priority is False
+    assert completed.priority_reasons is None

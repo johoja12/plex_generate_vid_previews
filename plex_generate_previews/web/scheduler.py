@@ -7,6 +7,7 @@ from typing import List, Tuple, Optional
 from itertools import chain
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from sqlmodel import Session, select, col
+from sqlalchemy import or_
 from loguru import logger
 
 from ..config import Config, load_config
@@ -256,6 +257,7 @@ class Scheduler:
         self._rate_limit_message = ""
         self._rate_limit_exempt_paths_cache = []  # Cache for exempt paths
         self._rate_limit_exempt_paths_cache_time = 0  # Timestamp of last cache update
+        self._priority_refresh_lock = threading.Lock()
 
     @staticmethod
     def _priority_order_by():
@@ -310,6 +312,80 @@ class Scheduler:
         self.force_sync = True
         logger.info("Manual sync requested")
         self.sync_wake_event.set()  # Wake sync thread for immediate sync
+
+    def refresh_priority_metadata(self, plex=None) -> dict[str, int]:
+        """Refresh priority score/reason metadata for existing queued work only."""
+        if not self.config and plex is None:
+            logger.debug("Skipping priority metadata refresh: no config loaded")
+            return {"candidates": 0, "scored": 0, "updated": 0}
+
+        if not self._priority_refresh_lock.acquire(blocking=False):
+            logger.debug("Priority metadata refresh already running")
+            return {"candidates": 0, "scored": 0, "updated": 0}
+
+        try:
+            candidate_statuses = [
+                PreviewStatus.MISSING,
+                PreviewStatus.QUEUED,
+                PreviewStatus.PROCESSING,
+            ]
+            with Session(engine) as session:
+                candidate_ids = set(
+                    session.exec(
+                        select(MediaItem.id).where(col(MediaItem.status).in_(candidate_statuses))
+                    ).all()
+                )
+
+            if plex is None:
+                plex = plex_server(self.config)
+
+            priority_infos = self.detect_priority_items(plex, missing_rating_keys=candidate_ids)
+
+            updated_count = 0
+            with Session(engine) as session:
+                rows = session.exec(
+                    select(MediaItem).where(
+                        or_(
+                            col(MediaItem.status).in_(candidate_statuses),
+                            MediaItem.is_priority == True,
+                        )
+                    )
+                ).all()
+
+                for item in rows:
+                    if item.status in candidate_statuses:
+                        changed = self._apply_priority_info_to_item(
+                            item,
+                            priority_infos.get(item.id),
+                        )
+                    else:
+                        changed = self._clear_completed_priority_metadata(item)
+
+                    if changed:
+                        session.add(item)
+                        updated_count += 1
+
+                session.commit()
+
+            summary = {
+                "candidates": len(candidate_ids),
+                "scored": len(priority_infos),
+                "updated": updated_count,
+            }
+            logger.info(
+                "Priority metadata refresh complete: "
+                f"{summary['scored']}/{summary['candidates']} candidates scored, "
+                f"{summary['updated']} rows updated"
+            )
+            return summary
+
+        except Exception as e:
+            logger.error(f"Priority metadata refresh failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {"candidates": 0, "scored": 0, "updated": 0}
+        finally:
+            self._priority_refresh_lock.release()
 
     def validate_mount_paths(self) -> tuple[bool, list[str]]:
         """
@@ -607,6 +683,9 @@ class Scheduler:
         self.sync_thread = threading.Thread(target=self._sync_loop, daemon=True)
         self.sync_thread.start()
 
+        if self.config:
+            threading.Thread(target=self.refresh_priority_metadata, daemon=True).start()
+
         logger.info("Scheduler started")
 
     def stop(self):
@@ -775,6 +854,7 @@ class Scheduler:
 
                 if sync_needed:
                     logger.info("Background sync: Starting library sync...")
+                    self.refresh_priority_metadata()
                     self.sync_library()
                     # last_sync_time is already updated inside sync_library()
                     self.force_sync = False
