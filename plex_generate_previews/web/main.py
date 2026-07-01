@@ -894,6 +894,7 @@ async def get_stats(session: Session = Depends(get_session), user: str = Depends
     queued = session.exec(select(func.count(MediaItem.id)).where(MediaItem.status == PreviewStatus.QUEUED)).one()
     missing = session.exec(select(func.count(MediaItem.id)).where(MediaItem.status == PreviewStatus.MISSING)).one()
     processing = session.exec(select(func.count(MediaItem.id)).where(MediaItem.status == PreviewStatus.PROCESSING)).one()
+    priority = session.exec(select(func.count(MediaItem.id)).where(MediaItem.is_priority == True)).one()
     failed = session.exec(select(func.count(MediaItem.id)).where(
         col(MediaItem.status).in_([PreviewStatus.FAILED, PreviewStatus.SLOW_FAILED])
     )).one()
@@ -929,6 +930,7 @@ async def get_stats(session: Session = Depends(get_session), user: str = Depends
         "queued": queued,
         "missing": missing,
         "processing": processing,
+        "priority": priority,
         "failed": failed,
         "media_missing": media_missing,
         "last_sync_time": (last_sync_time.isoformat() + "Z") if last_sync_time else None,

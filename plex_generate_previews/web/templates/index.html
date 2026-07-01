@@ -157,7 +157,7 @@
     </div>
 
     <!-- Stats Grid -->
-    <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2 sm:gap-4 mb-8">
+    <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2 sm:gap-4 mb-8">
         <div class="card border-l-4 border-blue-500 p-3 sm:p-4">
             <h3 class="text-gray-400 text-xs sm:text-sm">Total</h3>
             <p class="text-xl sm:text-2xl font-bold" x-text="stats.total">0</p>
@@ -173,6 +173,10 @@
         <div class="card border-l-4 border-orange-500 p-3 sm:p-4">
             <h3 class="text-gray-400 text-xs sm:text-sm">Queued</h3>
             <p class="text-xl sm:text-2xl font-bold" x-text="stats.queued">0</p>
+        </div>
+        <div class="card border-l-4 border-emerald-500 p-3 sm:p-4">
+            <h3 class="text-gray-400 text-xs sm:text-sm">Priority</h3>
+            <p class="text-xl sm:text-2xl font-bold" x-text="stats.priority">0</p>
         </div>
         <div class="card border-l-4 border-red-500 p-3 sm:p-4">
             <h3 class="text-gray-400 text-xs sm:text-sm">Missing</h3>

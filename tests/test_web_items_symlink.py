@@ -6,6 +6,7 @@ from sqlmodel.pool import StaticPool
 
 from plex_generate_previews.web.main import app, get_session, get_current_user
 from plex_generate_previews.web.models import MediaItem, PreviewStatus, MediaType
+from pathlib import Path
 
 # Setup in-memory DB
 @pytest.fixture(name="session")
@@ -88,3 +89,37 @@ def test_get_items_without_symlink(client, session, tmp_path):
     item_data = data["items"][0]
     assert item_data["file_path"] == str(regular_file)
     assert item_data["symlink_target"] is None
+
+
+def test_stats_include_priority_count(client, session):
+    priority_item = MediaItem(
+        id=3,
+        title="Priority Movie",
+        library_name="Movies",
+        media_type=MediaType.MOVIE,
+        status=PreviewStatus.MISSING,
+        is_priority=True,
+        priority_score=300,
+    )
+    regular_item = MediaItem(
+        id=4,
+        title="Regular Movie",
+        library_name="Movies",
+        media_type=MediaType.MOVIE,
+        status=PreviewStatus.MISSING,
+    )
+    session.add(priority_item)
+    session.add(regular_item)
+    session.commit()
+
+    response = client.get("/api/stats")
+
+    assert response.status_code == 200
+    assert response.json()["priority"] == 1
+
+
+def test_dashboard_renders_priority_stat_card():
+    html = Path("plex_generate_previews/web/templates/index.html").read_text()
+
+    assert "Priority" in html
+    assert 'x-text="stats.priority"' in html
