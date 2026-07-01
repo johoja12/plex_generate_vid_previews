@@ -20,6 +20,24 @@ class PriorityInfo:
     reasons: list[dict[str, Any]] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class EpisodeRow:
+    rating_key: int
+    show_id: int
+    season_index: int
+    episode_index: int
+
+
+@dataclass(frozen=True)
+class WatchEvent:
+    account_id: int
+    rating_key: int
+    show_id: int
+    season_index: int
+    episode_index: int
+    viewed_at: datetime
+
+
 def add_reason(info: PriorityInfo, reason_type: str, score: int, **metadata: Any) -> None:
     reason = {"type": reason_type, "score": score}
     reason.update({key: value for key, value in metadata.items() if value is not None})
@@ -51,3 +69,66 @@ def is_included_hub(title: str) -> bool:
         term in lowered
         for term in ("trending", "popular", "most watched", "favorite", "favourite")
     )
+
+
+def score_next_up_episodes(
+    watch_events: list[WatchEvent],
+    episodes: list[EpisodeRow],
+    missing_rating_keys: set[int],
+    now: datetime,
+) -> dict[int, PriorityInfo]:
+    latest_by_user_show: dict[tuple[int, int], WatchEvent] = {}
+    for event in watch_events:
+        if recency_multiplier(event.viewed_at, now) == 0:
+            continue
+        key = (event.account_id, event.show_id)
+        previous = latest_by_user_show.get(key)
+        if previous is None or event.viewed_at > previous.viewed_at:
+            latest_by_user_show[key] = event
+
+    episodes_by_show: dict[int, list[EpisodeRow]] = {}
+    for episode in episodes:
+        episodes_by_show.setdefault(episode.show_id, []).append(episode)
+    for show_episodes in episodes_by_show.values():
+        show_episodes.sort(key=lambda row: (row.season_index, row.episode_index, row.rating_key))
+
+    result: dict[int, PriorityInfo] = {}
+    accounts_by_candidate: dict[int, set[int]] = {}
+
+    for event in latest_by_user_show.values():
+        candidates = [
+            episode
+            for episode in episodes_by_show.get(event.show_id, [])
+            if episode.rating_key in missing_rating_keys
+            and (episode.season_index, episode.episode_index)
+            > (event.season_index, event.episode_index)
+        ][: len(NEXT_EPISODE_SCORES)]
+
+        multiplier = recency_multiplier(event.viewed_at, now)
+        for index, episode in enumerate(candidates):
+            info = result.setdefault(episode.rating_key, PriorityInfo())
+            accounts = accounts_by_candidate.setdefault(episode.rating_key, set())
+            base_score = int(NEXT_EPISODE_SCORES[index] * multiplier)
+            if not accounts:
+                add_reason(
+                    info,
+                    "next_episode",
+                    base_score,
+                    account_id=event.account_id,
+                    position=index + 1,
+                    source="watch_history",
+                )
+            accounts.add(event.account_id)
+
+    for rating_key, account_ids in accounts_by_candidate.items():
+        additional_users = max(0, len(account_ids) - 1)
+        if additional_users:
+            boost = min(MULTI_USER_BOOST_CAP, additional_users * MULTI_USER_BOOST)
+            add_reason(
+                result[rating_key],
+                "multi_user_overlap",
+                boost,
+                user_count=len(account_ids),
+            )
+
+    return result
