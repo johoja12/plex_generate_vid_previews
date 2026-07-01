@@ -54,6 +54,12 @@ def add_reason(info: PriorityInfo, reason_type: str, score: int, **metadata: Any
     info.score = min(MAX_SCORE, info.score + score)
 
 
+def replace_reason(info: PriorityInfo, reason_type: str, score: int, **metadata: Any) -> None:
+    info.reasons = [reason for reason in info.reasons if reason.get("type") != reason_type]
+    info.score = sum(int(reason.get("score", 0)) for reason in info.reasons)
+    add_reason(info, reason_type, score, **metadata)
+
+
 def recency_multiplier(viewed_at: datetime, now: datetime) -> float:
     age_days = (now - viewed_at).total_seconds() / 86400
     if age_days <= 2:
@@ -118,8 +124,12 @@ def score_next_up_episodes(
             info = result.setdefault(episode.rating_key, PriorityInfo())
             accounts = accounts_by_candidate.setdefault(episode.rating_key, set())
             base_score = int(NEXT_EPISODE_SCORES[index] * multiplier)
-            if not accounts:
-                add_reason(
+            current_next_reason = next(
+                (reason for reason in info.reasons if reason.get("type") == "next_episode"),
+                None,
+            )
+            if current_next_reason is None or base_score > int(current_next_reason.get("score", 0)):
+                replace_reason(
                     info,
                     "next_episode",
                     base_score,

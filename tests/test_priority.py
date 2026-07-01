@@ -153,6 +153,40 @@ def test_shared_next_up_candidate_gets_overlap_boost():
     ]
 
 
+def test_shared_next_up_candidate_uses_most_recent_watch_for_base_score():
+    now = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    episodes = [EpisodeRow(451, 45, 1, 1), EpisodeRow(452, 45, 1, 2)]
+    watches = [
+        WatchEvent(
+            account_id=1,
+            rating_key=451,
+            show_id=45,
+            season_index=1,
+            episode_index=1,
+            viewed_at=now - timedelta(days=20),
+        ),
+        WatchEvent(
+            account_id=2,
+            rating_key=451,
+            show_id=45,
+            season_index=1,
+            episode_index=1,
+            viewed_at=now - timedelta(hours=1),
+        ),
+    ]
+
+    result = score_next_up_episodes(watches, episodes, missing_rating_keys={452}, now=now)
+
+    assert result[452].score == 875
+    assert result[452].reasons[0] == {
+        "type": "next_episode",
+        "score": 800,
+        "account_id": 2,
+        "position": 1,
+        "source": "watch_history",
+    }
+
+
 def test_old_watch_history_does_not_create_next_up_candidate():
     now = datetime(2026, 7, 1, tzinfo=timezone.utc)
     episodes = [EpisodeRow(501, 50, 1, 1), EpisodeRow(502, 50, 1, 2)]
