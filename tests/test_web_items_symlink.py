@@ -1,5 +1,6 @@
 import os
 import pytest
+from datetime import datetime
 from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
@@ -147,3 +148,92 @@ def test_get_items_priority_pagination_uses_total_matching_rows(client, session)
     assert len(data["items"]) == 50
     assert data["total"] == 120
     assert data["pages"] == 3
+
+
+def test_get_items_default_order_matches_processing_priority(client, session):
+    newest = datetime(2026, 7, 1, 12, 0, 0)
+    older = datetime(2026, 6, 1, 12, 0, 0)
+
+    session.add(
+        MediaItem(
+            id=2001,
+            title="Newest Non Priority",
+            library_name="Movies",
+            media_type=MediaType.MOVIE,
+            status=PreviewStatus.MISSING,
+            priority_score=0,
+            added_at=newest,
+            updated_at=newest,
+        )
+    )
+    session.add(
+        MediaItem(
+            id=2002,
+            title="Low Priority",
+            library_name="Movies",
+            media_type=MediaType.MOVIE,
+            status=PreviewStatus.MISSING,
+            is_priority=True,
+            priority_score=250,
+            added_at=older,
+            updated_at=older,
+        )
+    )
+    session.add(
+        MediaItem(
+            id=2003,
+            title="High Priority",
+            library_name="Movies",
+            media_type=MediaType.MOVIE,
+            status=PreviewStatus.MISSING,
+            is_priority=True,
+            priority_score=900,
+            added_at=older,
+            updated_at=older,
+        )
+    )
+    session.commit()
+
+    response = client.get("/api/items?hide_completed=true&page=1&limit=50")
+
+    assert response.status_code == 200
+    titles = [item["title"] for item in response.json()["items"]]
+    assert titles[:3] == ["High Priority", "Low Priority", "Newest Non Priority"]
+
+
+def test_get_items_default_order_keeps_processable_items_before_failed(client, session):
+    now = datetime(2026, 7, 1, 12, 0, 0)
+
+    session.add(
+        MediaItem(
+            id=2101,
+            title="Failed High Priority",
+            library_name="TV",
+            media_type=MediaType.EPISODE,
+            status=PreviewStatus.FAILED,
+            is_priority=True,
+            priority_score=999,
+            added_at=now,
+            updated_at=now,
+        )
+    )
+    session.add(
+        MediaItem(
+            id=2102,
+            title="Missing Lower Priority",
+            library_name="TV",
+            media_type=MediaType.EPISODE,
+            status=PreviewStatus.MISSING,
+            is_priority=True,
+            priority_score=500,
+            added_at=now,
+            updated_at=now,
+        )
+    )
+    session.commit()
+
+    response = client.get("/api/items?hide_completed=true&page=1&limit=50")
+
+    assert response.status_code == 200
+    titles = [item["title"] for item in response.json()["items"]]
+    assert titles[:2] == ["Missing Lower Priority", "Failed High Priority"]

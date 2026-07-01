@@ -1008,13 +1008,22 @@ async def get_items(
             else:
                 # Put NULLs last for descending order
                 query = query.order_by(sort_column.desc().nullslast())
-    elif status in [PreviewStatus.QUEUED, PreviewStatus.MISSING]:
-        # For queue, prioritize newest items first (added_at desc), then queue_order as tiebreaker
-        # This ensures newly added items are always processed first
-        query = query.order_by(MediaItem.added_at.desc(), MediaItem.queue_order.asc())
     else:
-        # Default sort by added date (newest first)
-        query = query.order_by(MediaItem.added_at.desc())
+        # Default sort mirrors scheduler processing order so the list shows what will run next.
+        query = query.order_by(
+            case(
+                (
+                    col(MediaItem.status).in_(
+                        [PreviewStatus.PROCESSING, PreviewStatus.QUEUED, PreviewStatus.MISSING]
+                    ),
+                    0,
+                ),
+                else_=1,
+            ),
+            MediaItem.priority_score.desc(),
+            MediaItem.updated_at.desc(),
+            MediaItem.queue_order.asc(),
+        )
     
     # Pagination
     offset = (page - 1) * limit
