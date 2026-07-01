@@ -876,14 +876,17 @@
                     const seen = new Set();
                     for (const reason of reasons) {
                         const type = reason.type || 'priority';
-                        if (seen.has(type)) continue;
-                        seen.add(type);
+                        const key = type === 'hub' && reason.hub ? `${type}:${reason.hub}` : type;
+                        if (seen.has(key)) continue;
+                        seen.add(key);
                         chips.push({ ...reason, type });
                     }
                     return chips;
                 },
 
                 priorityReasonLabel(chip) {
+                    if (chip.type === 'hub' && chip.hub) return chip.hub;
+
                     const labels = {
                         on_deck: 'On deck',
                         next_episode: 'Next up',
@@ -908,7 +911,7 @@
                 priorityReasonTitle(chip) {
                     const label = this.priorityReasonLabel(chip);
                     const score = chip.score ? `score +${chip.score}` : 'priority item';
-                    if (chip.type === 'hub' && chip.hub) return `${label}: ${chip.hub} (${score})`;
+                    if (chip.type === 'hub' && chip.hub) return `Hub: ${chip.hub} (${score})`;
                     if (chip.type === 'next_episode' && chip.position) return `${label}: predicted episode ${chip.position} (${score})`;
                     if (chip.type === 'multi_user_overlap' && chip.user_count) return `${label}: ${chip.user_count} users (${score})`;
                     return `${label}: ${score}`;
