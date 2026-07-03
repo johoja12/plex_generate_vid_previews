@@ -487,7 +487,10 @@ async def move_item(
     if position == "top":
         min_order = session.exec(select(func.min(MediaItem.queue_order))).one() or 0
         item.queue_order = min_order - 1
-        logger.debug(f"Moving item {item_id} to top with new queue_order: {item.queue_order}")
+        if item.status in (PreviewStatus.MISSING, PreviewStatus.COMPLETED, PreviewStatus.FAILED):
+            item.status = PreviewStatus.QUEUED
+            item.progress = 0
+        logger.debug(f"Moving item {item_id} to top with queue_order={item.queue_order}, status={item.status}")
     elif position == "bottom":
         max_order = session.exec(select(func.max(MediaItem.queue_order))).one() or 0
         item.queue_order = max_order + 1
@@ -715,24 +718,38 @@ async def bulk_action(
     if not item_ids:
         raise HTTPException(status_code=400, detail="No items specified")
 
-    if action not in ["reset", "mark_completed", "mark_failed"]:
+    if action not in ["reset", "mark_completed", "mark_failed", "move_top"]:
         raise HTTPException(status_code=400, detail="Invalid action")
 
     updated_count = 0
-    for item_id in item_ids:
-        item = session.get(MediaItem, item_id)
-        if item:
-            if action == "reset":
-                item.status = PreviewStatus.MISSING
-                item.progress = 0
-            elif action == "mark_completed":
-                item.status = PreviewStatus.COMPLETED
-                item.progress = 100
-            elif action == "mark_failed":
-                item.status = PreviewStatus.FAILED
-                item.progress = 0
-            session.add(item)
-            updated_count += 1
+
+    if action == "move_top":
+        # Get current minimum queue_order, then assign decreasing values to all selected items
+        min_order = session.exec(select(func.min(MediaItem.queue_order))).one() or 0
+        for i, item_id in enumerate(item_ids):
+            item = session.get(MediaItem, item_id)
+            if item:
+                item.queue_order = min_order - len(item_ids) + i
+                if item.status in (PreviewStatus.MISSING, PreviewStatus.COMPLETED, PreviewStatus.FAILED):
+                    item.status = PreviewStatus.QUEUED
+                    item.progress = 0
+                session.add(item)
+                updated_count += 1
+    else:
+        for item_id in item_ids:
+            item = session.get(MediaItem, item_id)
+            if item:
+                if action == "reset":
+                    item.status = PreviewStatus.MISSING
+                    item.progress = 0
+                elif action == "mark_completed":
+                    item.status = PreviewStatus.COMPLETED
+                    item.progress = 100
+                elif action == "mark_failed":
+                    item.status = PreviewStatus.FAILED
+                    item.progress = 0
+                session.add(item)
+                updated_count += 1
 
     session.commit()
 
@@ -963,7 +980,12 @@ async def get_items(
     if status:
         filters.append(MediaItem.status == status)
     if search:
-        filters.append(col(MediaItem.title).contains(search))
+        filters.append(
+            or_(
+                col(MediaItem.title).contains(search),
+                col(MediaItem.file_path).contains(search)
+            )
+        )
     if library_name: # Apply library filter
         filters.append(MediaItem.library_name == library_name)
     if hide_completed: # Exclude completed items
@@ -1000,6 +1022,8 @@ async def get_items(
                 (MediaItem.avg_speed.is_(None), None),
                 else_=func.cast(func.replace(MediaItem.avg_speed, 'x', ''), Float)
             )
+        elif sort_by == "last_attempted_at":
+            sort_column = MediaItem.last_attempted_at
 
         if sort_column is not None:
             if sort_order == "asc":
@@ -1106,6 +1130,7 @@ async def get_items(
                         "avg_speed": part_speed,
                         "added_at": item.added_at,
                         "updated_at": item.updated_at,
+                        "last_attempted_at": item.last_attempted_at,
                         "error_message": part_error,
                         "is_multi_part": len(parts) > 1,
                         **priority_payload(item),
@@ -1128,6 +1153,7 @@ async def get_items(
                     "avg_speed": item.avg_speed,
                     "added_at": item.added_at,
                     "updated_at": item.updated_at,
+                    "last_attempted_at": item.last_attempted_at,
                     "error_message": item.error_message,
                     "is_multi_part": False,
                     **priority_payload(item),
@@ -1157,6 +1183,7 @@ async def get_items(
                 "avg_speed": item.avg_speed,
                 "added_at": item.added_at,
                 "updated_at": item.updated_at,
+                "last_attempted_at": item.last_attempted_at,
                 "error_message": item.error_message,
                 "is_multi_part": False,
                 **priority_payload(item),
@@ -1222,9 +1249,11 @@ async def get_processing_items(
             "status": item.status,
             "progress": item.progress,
             "avg_speed": item.avg_speed,
+            "current_fps": item.current_fps,
             **priority_payload(item),
             "file_path": file_path,
-            "symlink_target": symlink_target
+            "symlink_target": symlink_target,
+            "processing_worker_type": item.processing_worker_type
         })
 
     return {"items": result_items}

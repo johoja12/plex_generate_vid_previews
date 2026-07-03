@@ -233,6 +233,46 @@ def create_db_and_tables():
     except Exception:
         pass
 
+    # Migration: Add current_fps to MediaItem
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("ALTER TABLE mediaitem ADD COLUMN current_fps REAL"))
+    except Exception:
+        pass
+
+    # Migration: Add last_attempted_at to MediaItem
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("ALTER TABLE mediaitem ADD COLUMN last_attempted_at DATETIME"))
+    except Exception:
+        pass
+
+    # Migration: Add processing_worker_type to MediaItem
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("ALTER TABLE mediaitem ADD COLUMN processing_worker_type VARCHAR"))
+    except Exception:
+        pass
+
+    # Migration: Add priority scoring metadata to MediaItem
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("ALTER TABLE mediaitem ADD COLUMN priority_score INTEGER DEFAULT 0"))
+    except Exception:
+        pass
+
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("ALTER TABLE mediaitem ADD COLUMN priority_reasons VARCHAR"))
+    except Exception:
+        pass
+
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("ALTER TABLE mediaitem ADD COLUMN priority_last_calculated_at DATETIME"))
+    except Exception:
+        pass
+
 def get_session():
     with Session(engine) as session:
         yield session

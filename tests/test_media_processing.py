@@ -416,6 +416,7 @@ class TestGenerateImages:
             pass
     
     @patch('plex_generate_previews.media_processing.MediaInfo')
+    @patch('plex_generate_previews.media_processing.detect_hdr_ffprobe', return_value=True)
     @patch('subprocess.Popen')
     @patch('subprocess.run')
     @patch('os.path.exists')
@@ -423,8 +424,9 @@ class TestGenerateImages:
     @patch('time.sleep')
     @patch('glob.glob')
     def test_generate_images_hdr_detection(self, mock_glob, mock_sleep, mock_file, 
-                                          mock_exists, mock_run, mock_popen, 
-                                          mock_mediainfo, temp_dir, mock_config):
+                                          mock_exists, mock_run, mock_popen,
+                                          mock_detect_hdr, mock_mediainfo, temp_dir,
+                                          mock_config):
         """Test HDR video uses correct filter chain."""
         mock_run.return_value = MagicMock(returncode=0)
         
@@ -705,10 +707,11 @@ class TestGenerateImages:
         # Enable CPU threads
         mock_config.cpu_threads = 1
         
-        success, image_count, hw_used, seconds, speed = generate_images(
+        result = generate_images(
             "/test/video.mp4", temp_dir, 'NVIDIA', None, mock_config
         )
-        
+        success, image_count = result[0], result[1]
+
         # Should fail (no fallback since not codec error)
         assert success is False
         assert image_count == 0
@@ -816,11 +819,11 @@ class TestProcessItem:
         mock_config.plex_local_videos_path_mapping = ""
         mock_config.plex_videos_path_mapping = ""
         
-        # Should raise RuntimeError because all parts were skipped
+        # Should raise RuntimeError with specific file-not-found reason
         with pytest.raises(RuntimeError) as excinfo:
             process_item("54321", None, None, mock_config, mock_plex)
-        
-        assert "No media parts were successfully processed" in str(excinfo.value)
+
+        assert "File not found" in str(excinfo.value)
     
     @patch('plex_generate_previews.plex_client.get_media_parts_from_database')
     def test_process_item_plex_api_error(self, mock_get_parts, mock_config):
@@ -849,7 +852,6 @@ class TestMediaInfoImport:
         # This should not raise an exception in the test environment
         result = MediaInfo.can_parse()
         assert result is True or result is False  # Just check it doesn't crash
-
 
 
 

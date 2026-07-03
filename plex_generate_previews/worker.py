@@ -243,6 +243,8 @@ class Worker:
                     try:
                         cpu_fallback_queue.put((item_key, self.media_title, self.media_type))
                         logger.debug(f"Added {display_name} to CPU fallback queue")
+                        # Mark as completed from GPU worker perspective (task will be handled by CPU)
+                        self.completed += 1
                     except Exception as queue_error:
                         logger.error(f"Failed to add {item_key} to fallback queue: {queue_error}")
                         error_msg = f"Failed to add to fallback queue: {str(queue_error)}"
@@ -251,15 +253,20 @@ class Worker:
                             progress_callback(0, 0, 0, speed="Failed", failed=True, error_message=error_msg)
                         self.failed += 1
                 else:
-                    if config.cpu_threads == 0:
-                        error_msg = f"Codec not supported by GPU, CPU threads disabled: {str(e)}"
-                        logger.warning(f"Codec not supported by GPU, but CPU threads are disabled (CPU_THREADS=0); skipping {display_name}")
+                    # No CPU workers available — inline CPU retry in this GPU worker thread
+                    logger.info(f"No CPU workers available, retrying {display_name} inline without GPU acceleration")
+                    try:
+                        process_item(item_key, None, None, config, plex, progress_callback)
+                        if progress_callback:
+                            progress_callback(100, self.total_duration, self.total_duration, speed="Finished")
+                        self.completed += 1
+                    except Exception as cpu_error:
+                        error_msg = f"CPU fallback also failed: {str(cpu_error)}"
+                        logger.error(f"Worker {self.worker_id} CPU fallback failed for {display_name}: {cpu_error}")
                         self.error_message = error_msg
                         if progress_callback:
                             progress_callback(0, 0, 0, speed="Failed", failed=True, error_message=error_msg)
-                    self.failed += 1
-                # Mark as completed from GPU worker perspective (task will be handled by CPU)
-                self.completed += 1
+                        self.failed += 1
             else:
                 # CPU worker received codec error - this is unexpected, treat as failure
                 error_msg = f"CPU codec error (file may be corrupted): {str(e)}"
@@ -843,10 +850,11 @@ class WorkerPool:
             if current_time - worker.last_verbose_log_time >= 5.0:
                 worker.last_verbose_log_time = current_time
                 speed_display = speed if speed else "0.0x"
+                fps_display = f" fps={fps:.1f}" if fps > 0 else ""
                 if worker.worker_type == 'GPU':
-                    logger.info(f"[GPU {worker.gpu_index}]: {worker.media_title} - {progress_percent}% (speed={speed_display})")
+                    logger.info(f"[GPU {worker.gpu_index}]: {worker.media_title} - {progress_percent}% (speed={speed_display}{fps_display})")
                 else:
-                    logger.info(f"[CPU]: {worker.media_title} - {progress_percent}% (speed={speed_display})")
+                    logger.info(f"[CPU]: {worker.media_title} - {progress_percent}% (speed={speed_display}{fps_display})")
     
     def shutdown(self) -> None:
         """Shutdown all workers gracefully."""

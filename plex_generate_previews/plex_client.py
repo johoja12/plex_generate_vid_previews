@@ -6,6 +6,7 @@ library querying, and duplicate location filtering.
 """
 
 import os
+import struct
 import time
 import http.client
 import xml.etree.ElementTree
@@ -22,6 +23,123 @@ from loguru import logger
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 from .config import Config
+
+
+def _get_plex_db_path(plex_config_folder: str) -> str:
+    """Get the path to the Plex SQLite database file."""
+    return os.path.join(plex_config_folder, 'Plug-in Support', 'Databases',
+                        'com.plexapp.plugins.library.db')
+
+
+def _validate_and_invalidate_nfs_cache(db_path: str) -> bool:
+    """
+    Validate the SQLite database header against actual file size.
+
+    When reading a SQLite database over NFS with immutable=1 mode, the kernel
+    page cache can serve stale data for the header page. This causes SQLite to
+    see a page count that doesn't match the actual file size, resulting in
+    "database disk image is malformed" errors.
+
+    This function detects the mismatch and uses posix_fadvise(POSIX_FADV_DONTNEED)
+    to drop the page cache for the file, forcing a fresh read from the NFS server.
+
+    Args:
+        db_path: Path to the SQLite database file
+
+    Returns:
+        True if the database is valid (or was successfully fixed), False otherwise
+    """
+    try:
+        file_size = os.path.getsize(db_path)
+        with open(db_path, 'rb') as f:
+            header = f.read(100)
+            if len(header) < 100 or header[:16] != b'SQLite format 3\x00':
+                return False
+            page_size = struct.unpack('>H', header[16:18])[0]
+            if page_size == 1:
+                page_size = 65536
+            db_size_pages = struct.unpack('>I', header[28:32])[0]
+
+        expected_size = db_size_pages * page_size
+        if expected_size == file_size:
+            return True
+
+        # Mismatch detected — stale NFS page cache
+        logger.warning(
+            f"Plex DB header/size mismatch: header says {db_size_pages} pages "
+            f"({expected_size:,} bytes) but file is {file_size:,} bytes. "
+            f"Invalidating NFS page cache..."
+        )
+
+        # Drop the page cache for this file using posix_fadvise (no root needed)
+        fd = os.open(db_path, os.O_RDONLY)
+        try:
+            os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+        finally:
+            os.close(fd)
+
+        # Also invalidate cache for WAL and SHM files if they exist
+        for suffix in ('-wal', '-shm'):
+            aux_path = db_path + suffix
+            if os.path.exists(aux_path):
+                fd = os.open(aux_path, os.O_RDONLY)
+                try:
+                    os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+                finally:
+                    os.close(fd)
+
+        # Re-validate after cache invalidation
+        file_size = os.path.getsize(db_path)
+        with open(db_path, 'rb') as f:
+            header = f.read(100)
+            page_size = struct.unpack('>H', header[16:18])[0]
+            if page_size == 1:
+                page_size = 65536
+            db_size_pages = struct.unpack('>I', header[28:32])[0]
+
+        expected_size = db_size_pages * page_size
+        if expected_size == file_size:
+            logger.info("NFS page cache invalidated successfully — Plex DB header now matches file size")
+            return True
+
+        logger.error(
+            f"Plex DB still mismatched after cache invalidation: "
+            f"header says {expected_size:,} bytes, file is {file_size:,} bytes"
+        )
+        return False
+
+    except (OSError, AttributeError):
+        # posix_fadvise not available (e.g., macOS/Windows) or file access error
+        # Not fatal — the DB may still work if it's not actually on NFS
+        return True
+
+
+def open_plex_db(plex_config_folder: str) -> sqlite3.Connection:
+    """
+    Open the Plex SQLite database with NFS cache validation.
+
+    This is the centralized entry point for all Plex database access. It validates
+    the database header against the actual file size to detect stale NFS page cache,
+    and invalidates the cache if needed before opening the connection.
+
+    Args:
+        plex_config_folder: Path to Plex config folder
+
+    Returns:
+        sqlite3.Connection: Read-only database connection
+
+    Raises:
+        FileNotFoundError: If the database file doesn't exist
+        sqlite3.DatabaseError: If the database is corrupted and can't be recovered
+    """
+    db_path = _get_plex_db_path(plex_config_folder)
+
+    if not os.path.exists(db_path):
+        raise FileNotFoundError(f"Plex database not found at: {db_path}")
+
+    _validate_and_invalidate_nfs_cache(db_path)
+
+    return sqlite3.connect(f'file:{db_path}?mode=ro&immutable=1', uri=True)
 
 
 def retry_plex_call(func, *args, max_retries=3, retry_delay=1.0, **kwargs):
@@ -166,14 +284,7 @@ def get_hash_with_fallback(item, plex_config_folder: str) -> Optional[str]:
     """
     # Query database directly using item ID (more reliable than API)
     try:
-        import sqlite3
-        db_path = os.path.join(plex_config_folder, 'Plug-in Support', 'Databases', 'com.plexapp.plugins.library.db')
-
-        if not os.path.exists(db_path):
-            logger.debug(f"Plex database not found at: {db_path}")
-            return None
-
-        conn = sqlite3.connect(db_path)
+        conn = open_plex_db(plex_config_folder)
         cursor = conn.cursor()
 
         # Query media_parts.hash via JOIN (bundle hash is in media_parts, not metadata_items)
@@ -195,6 +306,9 @@ def get_hash_with_fallback(item, plex_config_folder: str) -> Optional[str]:
             logger.debug(f"No hash found in database for item {item.ratingKey} ({item.title})")
             return None
 
+    except FileNotFoundError:
+        logger.debug(f"Plex database not found")
+        return None
     except sqlite3.Error as e:
         logger.error(f"Database error while querying hash for {item.title}: {e}")
         return None
@@ -217,15 +331,8 @@ def get_media_parts_from_database(plex_config_folder: str, rating_key: int):
     Returns:
         list: List of tuples (file_path, bundle_hash) for each media part, or empty list if not found
     """
-    db_path = os.path.join(plex_config_folder, 'Plug-in Support', 'Databases',
-                           'com.plexapp.plugins.library.db')
-
-    if not os.path.exists(db_path):
-        logger.warning(f"Plex database not found at: {db_path}")
-        return []
-
     try:
-        conn = sqlite3.connect(db_path)
+        conn = open_plex_db(plex_config_folder)
         cursor = conn.cursor()
 
         # Query for all media parts associated with this item
@@ -247,6 +354,9 @@ def get_media_parts_from_database(plex_config_folder: str, rating_key: int):
             logger.warning(f"No media parts found in database for item {rating_key}")
             return []
 
+    except FileNotFoundError as e:
+        logger.warning(str(e))
+        return []
     except sqlite3.Error as e:
         logger.error(f"Database error while querying media parts for item {rating_key}: {e}")
         return []
@@ -271,15 +381,8 @@ def get_all_media_parts_batch(plex_config_folder: str, rating_keys: list[int]) -
     if not rating_keys:
         return {}
 
-    db_path = os.path.join(plex_config_folder, 'Plug-in Support', 'Databases',
-                           'com.plexapp.plugins.library.db')
-
-    if not os.path.exists(db_path):
-        logger.warning(f"Plex database not found at: {db_path}")
-        return {}
-
     try:
-        conn = sqlite3.connect(db_path)
+        conn = open_plex_db(plex_config_folder)
         cursor = conn.cursor()
 
         # Query for all media parts for all rating keys at once
@@ -305,6 +408,9 @@ def get_all_media_parts_batch(plex_config_folder: str, rating_keys: list[int]) -
 
         return media_parts_map
 
+    except FileNotFoundError as e:
+        logger.warning(str(e))
+        return {}
     except sqlite3.Error as e:
         logger.error(f"Database error while batch querying media parts: {e}")
         return {}
@@ -329,15 +435,8 @@ def get_hash_from_database(plex_config_folder: str, file_path: str) -> str:
     Returns:
         str: Bundle hash if found, None otherwise
     """
-    db_path = os.path.join(plex_config_folder, 'Plug-in Support', 'Databases',
-                           'com.plexapp.plugins.library.db')
-
-    if not os.path.exists(db_path):
-        logger.warning(f"Plex database not found at: {db_path}")
-        return None
-
     try:
-        conn = sqlite3.connect(db_path)
+        conn = open_plex_db(plex_config_folder)
         cursor = conn.cursor()
 
         # Query media_parts.hash directly (bundle hash is in media_parts, not metadata_items)
@@ -359,6 +458,9 @@ def get_hash_from_database(plex_config_folder: str, file_path: str) -> str:
             logger.debug(f"No hash found in database for {file_path}")
             return None
 
+    except FileNotFoundError as e:
+        logger.warning(str(e))
+        return None
     except sqlite3.Error as e:
         logger.error(f"Database error while querying hash for {file_path}: {e}")
         return None
@@ -398,15 +500,8 @@ def get_library_sections_from_database(plex_config_folder: str, plex_libraries: 
         list: List of tuples (section_title, media_items) where media_items is a list of
               (rating_key, title, media_type, bundle_hash, added_at) tuples
     """
-    db_path = os.path.join(plex_config_folder, 'Plug-in Support', 'Databases',
-                           'com.plexapp.plugins.library.db')
-
-    if not os.path.exists(db_path):
-        logger.error(f"Plex database not found at: {db_path}")
-        return []
-
     try:
-        conn = sqlite3.connect(db_path)
+        conn = open_plex_db(plex_config_folder)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
@@ -506,6 +601,9 @@ def get_library_sections_from_database(plex_config_folder: str, plex_libraries: 
         conn.close()
         return results
 
+    except FileNotFoundError as e:
+        logger.error(str(e))
+        return []
     except sqlite3.Error as e:
         logger.error(f"Database error while querying library sections: {e}")
         return []
@@ -529,15 +627,8 @@ def get_watch_history_from_database(plex_config_folder: str, limit_per_user: int
         dict: Dictionary mapping account_id -> list of (metadata_item_id, viewed_at) tuples,
               sorted by most recent first
     """
-    db_path = os.path.join(plex_config_folder, 'Plug-in Support', 'Databases',
-                           'com.plexapp.plugins.library.db')
-
-    if not os.path.exists(db_path):
-        logger.warning(f"Plex database not found at: {db_path}")
-        return {}
-
     try:
-        conn = sqlite3.connect(db_path)
+        conn = open_plex_db(plex_config_folder)
         cursor = conn.cursor()
 
         # Query watch history from metadata_item_views table
@@ -575,6 +666,9 @@ def get_watch_history_from_database(plex_config_folder: str, limit_per_user: int
 
         return history_by_user
 
+    except FileNotFoundError as e:
+        logger.warning(str(e))
+        return {}
     except sqlite3.Error as e:
         logger.error(f"Database error while querying watch history: {e}")
         return {}

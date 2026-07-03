@@ -3,7 +3,7 @@ import pytest
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 from sqlalchemy import inspect
-from sqlmodel import Session, SQLModel, create_engine, select
+from sqlmodel import Session, SQLModel, create_engine, select, col
 from sqlmodel.pool import StaticPool
 from plex_generate_previews.web.models import MediaItem, MediaType, PreviewStatus
 from plex_generate_previews.web.priority import PriorityInfo, add_reason
@@ -328,3 +328,112 @@ def test_refresh_priority_metadata_updates_existing_pending_rows(monkeypatch):
     assert pending.priority_reasons == '[{"type":"next_episode","score":800,"account_id":1}]'
     assert completed.is_priority is False
     assert completed.priority_reasons is None
+
+
+def test_build_mount_check_paths_includes_required_preview_paths(mock_config):
+    scheduler = Scheduler()
+    scheduler.config = mock_config
+    mock_config.plex_config_folder = "/plex-config"
+
+    paths = scheduler._build_mount_check_paths("/mnt/remote/nzbdav,/mnt/remote/debrid")
+
+    assert paths == [
+        "/mnt/remote/nzbdav",
+        "/mnt/remote/debrid",
+        "/mnt/plex",
+        "/plex-config",
+    ]
+
+
+def test_count_newly_media_missing_detects_transitions(mock_config):
+    scheduler = Scheduler()
+    scheduler.config = mock_config
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        existing = MediaItem(
+            id=1,
+            title="Existing",
+            library_name="Movies",
+            media_type=MediaType.MOVIE,
+            status=PreviewStatus.MISSING,
+        )
+        session.add(existing)
+        session.commit()
+
+        existing.status = PreviewStatus.MEDIA_MISSING
+
+        new_item = MediaItem(
+            id=2,
+            title="New Missing",
+            library_name="Movies",
+            media_type=MediaType.MOVIE,
+            status=PreviewStatus.MEDIA_MISSING,
+        )
+        session.add(new_item)
+
+        newly_missing, total_checked = scheduler._count_newly_media_missing_items(session)
+
+        assert total_checked == 2
+        assert newly_missing == 2
+
+
+def test_queue_candidate_order_prioritizes_manual_queue_then_priority_score(mock_config):
+    scheduler = Scheduler()
+    scheduler.config = mock_config
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        low_score = MediaItem(
+            id=1,
+            title="Hub Only",
+            library_name="TV",
+            media_type=MediaType.EPISODE,
+            status=PreviewStatus.MISSING,
+            is_priority=True,
+            priority_score=250,
+        )
+        high_score = MediaItem(
+            id=2,
+            title="Next Episode",
+            library_name="TV",
+            media_type=MediaType.EPISODE,
+            status=PreviewStatus.MISSING,
+            is_priority=True,
+            priority_score=999,
+        )
+        manual_queued = MediaItem(
+            id=3,
+            title="Manual Queue",
+            library_name="Movies",
+            media_type=MediaType.MOVIE,
+            status=PreviewStatus.QUEUED,
+            is_priority=False,
+            priority_score=0,
+        )
+        session.add_all([low_score, high_score, manual_queued])
+        session.commit()
+
+        ordered_items = session.exec(
+            select(MediaItem).where(
+                col(MediaItem.status).in_([PreviewStatus.MISSING, PreviewStatus.QUEUED])
+            ).order_by(*scheduler._queue_candidate_order_by())
+        ).all()
+
+        assert [item.title for item in ordered_items] == [
+            "Manual Queue",
+            "Next Episode",
+            "Hub Only",
+        ]

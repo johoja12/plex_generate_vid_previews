@@ -286,6 +286,15 @@
                                 'bg-orange-900/50 text-orange-300': item.status === 'queued'
                             }" class="px-1.5 sm:px-2 py-0.5 sm:py-1 rounded text-[10px] sm:text-xs font-bold uppercase" x-text="item.status === 'processing' ? 'proc' : 'queue'"></span>
 
+                            <!-- Worker Type Badge (GPU/CPU) -->
+                            <span x-show="item.processing_worker_type && item.status === 'processing'"
+                                  :class="{
+                                      'bg-green-900/50 text-green-300': item.processing_worker_type === 'GPU',
+                                      'bg-blue-900/50 text-blue-300': item.processing_worker_type === 'CPU'
+                                  }"
+                                  class="px-1.5 sm:px-2 py-0.5 sm:py-1 rounded text-[10px] sm:text-xs font-bold"
+                                  x-text="item.processing_worker_type"></span>
+
                             <!-- Progress Bar -->
                             <div class="flex-1 sm:w-32 min-w-[80px]">
                                 <div class="flex items-center gap-1.5 sm:gap-2">
@@ -297,6 +306,11 @@
                                     <span class="text-[10px] sm:text-xs text-gray-400 w-8 sm:w-10 text-right" x-text="item.progress + '%'"></span>
                                 </div>
                             </div>
+
+                            <!-- FPS -->
+                            <span x-show="item.current_fps && item.status === 'processing'"
+                                  class="text-[10px] sm:text-xs text-gray-400 w-12 sm:w-14 text-right"
+                                  x-text="item.current_fps ? (item.current_fps.toFixed(1) + ' fps') : ''"></span>
 
                             <!-- Speed -->
                             <span class="text-xs sm:text-sm w-10 sm:w-12 text-right"
@@ -323,6 +337,9 @@
                 <span x-text="selectedIds.length"></span> selected
             </div>
             <div class="flex flex-wrap gap-1.5 sm:gap-2 w-full sm:w-auto">
+                <button @click="bulkAction('move_top')" class="flex-1 sm:flex-none text-[10px] sm:text-xs bg-blue-900/50 hover:bg-blue-900 text-blue-200 px-2 sm:px-3 py-1.5 sm:py-2 rounded font-bold">
+                    ▲ Top
+                </button>
                 <button @click="bulkAction('reset')" class="flex-1 sm:flex-none text-[10px] sm:text-xs bg-red-900/50 hover:bg-red-900 text-red-200 px-2 sm:px-3 py-1.5 sm:py-2 rounded font-bold">
                     ⟳ Reset
                 </button>
@@ -462,6 +479,7 @@
                             <div><span class="text-gray-500">ID:</span> <span x-text="item.item_id"></span></div>
                             <div><span class="text-gray-500">Part:</span> <span x-text="item.part_index + 1"></span></div>
                             <div><span class="text-gray-500">Added:</span> <span x-text="formatDate(item.added_at)"></span></div>
+                            <div><span class="text-gray-500">Attempted:</span> <span x-text="formatDate(item.last_attempted_at)"></span></div>
                             <div><span class="text-gray-500">Updated:</span> <span x-text="formatDate(item.updated_at)"></span></div>
                         </div>
                         <div x-show="item.bundle_hash">
@@ -510,6 +528,15 @@
                             <span class="inline-flex items-center">
                                 Added
                                 <span class="ml-1" x-show="sortBy === 'added_at'">
+                                    <span x-show="sortOrder === 'asc'">↑</span>
+                                    <span x-show="sortOrder === 'desc'">↓</span>
+                                </span>
+                            </span>
+                        </th>
+                        <th class="pb-2 cursor-pointer hover:text-white transition select-none" @click="sortByColumn('last_attempted_at')">
+                            <span class="inline-flex items-center">
+                                Attempted
+                                <span class="ml-1" x-show="sortBy === 'last_attempted_at'">
                                     <span x-show="sortOrder === 'asc'">↑</span>
                                     <span x-show="sortOrder === 'desc'">↓</span>
                                 </span>
@@ -572,6 +599,7 @@
                         <td class="py-3 capitalize text-sm text-gray-400" x-text="item.media_type"></td>
                         <td class="py-3 text-sm text-gray-400" x-text="item.library_name"></td>
                         <td class="py-3 text-sm text-gray-400" x-text="formatDate(item.added_at)"></td>
+                        <td class="py-3 text-sm text-gray-400" x-text="formatDate(item.last_attempted_at)"></td>
                         <td class="py-3">
                             <span :class="{
                                 'text-green-500': item.status === 'completed',
@@ -634,7 +662,7 @@
                     </tr>
                     <!-- Expandable details row for this part -->
                     <tr x-show="isExpanded(item.id)" x-collapse class="border-b border-gray-800">
-                        <td colspan="11" class="p-0">
+                        <td colspan="12" class="p-0">
                             <div class="bg-gray-800 px-6 py-4 border-t border-gray-700">
                                 <div class="space-y-3 text-sm">
                                     <!-- Item ID and Part Info -->
@@ -711,7 +739,7 @@
                 </template>
                 <tbody>
                     <tr x-show="items.length === 0">
-                        <td colspan="10" class="py-8 text-center text-gray-500">No items found matching your criteria.</td>
+                        <td colspan="12" class="py-8 text-center text-gray-500">No items found matching your criteria.</td>
                     </tr>
                 </tbody>
             </table>
@@ -1234,6 +1262,7 @@
 
                     const actionText = action === 'reset' ? 'reset to missing' :
                                       action === 'mark_completed' ? 'mark as completed' :
+                                      action === 'move_top' ? 'move to top of queue' :
                                       'mark as failed';
 
                     this.showConfirm(

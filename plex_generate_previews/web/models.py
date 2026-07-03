@@ -77,6 +77,8 @@ class MediaItem(SQLModel, table=True):
     priority_reasons: Optional[str] = None # JSON list explaining priority score
     priority_last_calculated_at: Optional[datetime] = None
     avg_speed: Optional[str] = None # Average processing speed (e.g., "1.23x")
+    current_fps: Optional[float] = None # Current FFmpeg processing FPS (transient, only during processing)
+    processing_worker_type: Optional[str] = None # GPU or CPU (transient, only during processing)
 
     # Metadata
     file_path: Optional[str] = None  # Primary file path (for backwards compatibility)
@@ -87,5 +89,6 @@ class MediaItem(SQLModel, table=True):
 
     # Error tracking
     error_message: Optional[str] = None # Failure reason for failed items
+    last_attempted_at: Optional[datetime] = None # When processing was last attempted
 
     updated_at: datetime = Field(default_factory=datetime.utcnow)

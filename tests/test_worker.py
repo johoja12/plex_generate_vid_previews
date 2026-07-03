@@ -229,19 +229,25 @@ class TestWorker:
     
     @patch('plex_generate_previews.worker.process_item')
     def test_worker_gpu_codec_error_no_cpu_threads(self, mock_process):
-        """Test GPU worker when codec error occurs but CPU threads disabled."""
+        """Test GPU worker retries inline without GPU when CPU threads disabled."""
         worker = Worker(0, 'GPU', 'NVIDIA', 'cuda', 0, 'RTX 2060 SUPER')
         config = MagicMock()
         config.cpu_threads = 0  # CPU threads disabled
         plex = MagicMock()
         fallback_queue = queue.Queue()
-        
-        # Mock process_item to raise CodecNotSupportedError
-        def mock_process_fn(*args, **kwargs):
-            raise CodecNotSupportedError("Codec not supported by GPU")
-        
+
+        # Mock process_item: fails with GPU (CodecNotSupportedError),
+        # but succeeds without GPU (inline CPU retry)
+        call_count = [0]
+        def mock_process_fn(item_key, gpu, gpu_device, cfg, plx, progress_callback=None):
+            call_count[0] += 1
+            if gpu is not None:
+                raise CodecNotSupportedError("Codec not supported by GPU")
+            # CPU retry succeeds
+            return None
+
         mock_process.side_effect = mock_process_fn
-        
+
         worker.assign_task(
             '100',
             config,
@@ -250,15 +256,16 @@ class TestWorker:
             media_type='episode',
             cpu_fallback_queue=fallback_queue
         )
-        
+
         # Wait for thread to complete
         time.sleep(0.2)
-        
-        # Worker should be marked as completed but task failed
+
+        # Worker should have retried inline without GPU and succeeded
         assert worker.completed == 1
-        assert worker.failed == 1  # Failed because no CPU threads available
-        
-        # Fallback queue should be empty
+        assert worker.failed == 0
+        assert call_count[0] == 2  # First GPU attempt + inline CPU retry
+
+        # Fallback queue should be empty (inline retry, not queued)
         assert fallback_queue.empty()
     
     @patch('plex_generate_previews.worker.process_item')
@@ -608,36 +615,37 @@ class TestWorkerPool:
     
     @patch('plex_generate_previews.worker.process_item')
     def test_worker_pool_fallback_queue_no_cpu_workers(self, mock_process):
-        """Test that codec errors fail when no CPU workers available."""
+        """Test that GPU worker retries inline without GPU when no CPU workers available."""
         def mock_process_fn(item_key, gpu, gpu_device, config, plex, progress_callback=None):
             time.sleep(0.01)
             # GPU worker raises codec error
             if gpu is not None:
                 raise CodecNotSupportedError("Codec not supported")
+            # Inline CPU retry succeeds
             return None
-        
+
         mock_process.side_effect = mock_process_fn
-        
+
         selected_gpus = [('NVIDIA', 'cuda', {'name': 'RTX 2060'})]
         pool = WorkerPool(gpu_workers=1, cpu_workers=0, selected_gpus=selected_gpus)
-        
+
         config = MagicMock()
         config.cpu_threads = 0  # No CPU threads
         plex = MagicMock()
-        
+
         items = [
             ('1', 'AV1 Video', 'episode'),
         ]
-        
+
         # Mock progress manager
         mock_progress_manager = MagicMock()
         mock_progress_manager.init_workers.return_value = None
         mock_progress_manager.update_main_progress.return_value = None
         mock_progress_manager.update_worker.return_value = None
         mock_progress_manager.cleanup_workers.return_value = None
-        
+
         pool.process_items(items, config, plex, mock_progress_manager, title_max_width=20)
-        
-        # GPU worker should fail (no CPU workers to hand off to)
-        assert pool.workers[0].failed == 1
-        assert pool.workers[0].completed == 1  # Completed from GPU perspective
+
+        # GPU worker should have retried inline and succeeded
+        assert pool.workers[0].failed == 0
+        assert pool.workers[0].completed == 1

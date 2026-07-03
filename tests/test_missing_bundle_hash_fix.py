@@ -18,13 +18,17 @@ XML_MISSING_HASH = """<?xml version="1.0" encoding="UTF-8"?>
 </MediaContainer>
 """
 
-def test_process_item_raises_when_no_hash(mock_config):
+@patch('plex_generate_previews.plex_client.get_media_parts_from_database')
+def test_process_item_raises_when_no_hash(mock_get_media_parts, mock_config):
     """Test that process_item raises RuntimeError when no bundle hash is found."""
     mock_plex = MagicMock()
     mock_plex.query.return_value = ET.fromstring(XML_MISSING_HASH)
+    mock_get_media_parts.return_value = [
+        ("/data/movies/Test Movie (2024)/Test Movie (2024).mkv", None)
+    ]
     
     # Mock file existence so it doesn't fail on "file not found"
     with patch('os.path.isfile', return_value=True):
         # We expect a RuntimeError because no parts were processed
-        with pytest.raises(RuntimeError, match="No media parts were successfully processed"):
+        with pytest.raises(RuntimeError, match="Invalid or missing bundle hash"):
             process_item("54321", None, None, mock_config, mock_plex)

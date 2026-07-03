@@ -6,6 +6,7 @@ import sqlite3
 from typing import List, Tuple, Optional
 from itertools import chain
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from sqlalchemy import case, inspect
 from sqlmodel import Session, select, col
 from sqlalchemy import or_
 from loguru import logger
@@ -162,6 +163,11 @@ class DbProgressManager:
         media_file = data.get('media_file')
         bundle_hash = data.get('bundle_hash')
         avg_speed = data.get('avg_speed')
+        current_fps = data.get('fps', 0)
+        worker_type = data.get('worker_type')
+
+        if worker_type:
+            item.processing_worker_type = worker_type
 
         if data.get('failed'):
             # Task failed - check if it's slow processing
@@ -173,6 +179,7 @@ class DbProgressManager:
                 logger.info(f"Marked item {item.id} ({item.title}) as FAILED: {error_message}")
             item.progress = int(progress) if progress > 0 else item.progress
             item.error_message = error_message
+            item.current_fps = None
             if avg_speed:
                 item.avg_speed = avg_speed
             if bundle_hash:
@@ -183,6 +190,8 @@ class DbProgressManager:
             item.status = PreviewStatus.COMPLETED
             item.progress = 100
             item.error_message = None
+            item.current_fps = None
+            item.processing_worker_type = None
             if avg_speed:
                 item.avg_speed = avg_speed
             if bundle_hash:
@@ -209,13 +218,14 @@ class DbProgressManager:
             if item.status not in [PreviewStatus.FAILED, PreviewStatus.SLOW_FAILED, PreviewStatus.COMPLETED]:
                 item.status = PreviewStatus.PROCESSING
             item.progress = int(progress)
+            item.current_fps = current_fps if current_fps > 0 else item.current_fps
             if avg_speed:
                 item.avg_speed = avg_speed
             if media_file:
                 item.file_path = media_file
             if bundle_hash:
                 item.current_processing_bundle_hash = bundle_hash
-        
+
         elif progress == 0 and not data.get('failed'):
             # Started processing a new part (0% progress)
             # Don't reset status if it was already processing (e.g. part 2 starting after part 1)
@@ -223,8 +233,9 @@ class DbProgressManager:
                 item.status = PreviewStatus.PROCESSING
             elif item.status == PreviewStatus.MISSING or item.status == PreviewStatus.QUEUED:
                 item.status = PreviewStatus.PROCESSING
-            
+
             item.progress = 0
+            item.last_attempted_at = datetime.utcnow()
             if bundle_hash:
                 item.current_processing_bundle_hash = bundle_hash
 
@@ -387,6 +398,77 @@ class Scheduler:
         finally:
             self._priority_refresh_lock.release()
 
+    def _build_mount_check_paths(self, configured_paths: Optional[str]) -> list[str]:
+        """
+        Build the mount paths that must be available before sync can run.
+
+        We always include the configured Plex config folder plus the media and
+        remote paths used by the preview generator, even if the persisted
+        settings only list a subset of paths.
+        """
+        paths: list[str] = []
+
+        if configured_paths:
+            paths.extend([p.strip() for p in configured_paths.split(',') if p.strip()])
+
+        required_paths = [
+            "/mnt/plex",
+            "/mnt/remote/nzbdav",
+            "/mnt/remote/debrid",
+        ]
+        plex_config_folder = getattr(self.config, "plex_config_folder", None) if self.config else None
+        required_paths.append(plex_config_folder or "/plex-config")
+
+        for path in required_paths:
+            if path not in paths:
+                paths.append(path)
+
+        return paths
+
+    def _count_newly_media_missing_items(self, session) -> tuple[int, int]:
+        """
+        Count media items that transitioned to MEDIA_MISSING in the current unit of work.
+
+        New rows that are already MEDIA_MISSING count as newly missing, and
+        dirty persistent rows only count if their status actually changed to
+        MEDIA_MISSING in this session.
+        """
+        newly_media_missing = 0
+        total_checked = 0
+
+        for item in chain(session.new, session.dirty):
+            if not isinstance(item, MediaItem):
+                continue
+
+            total_checked += 1
+            if item.status != PreviewStatus.MEDIA_MISSING:
+                continue
+
+            item_state = inspect(item)
+            if item in session.new:
+                newly_media_missing += 1
+                continue
+
+            status_history = item_state.attrs.status.history
+            if not status_history.has_changes():
+                continue
+
+            previous_statuses = [status for status in status_history.deleted if status is not None]
+            previous_status = previous_statuses[-1] if previous_statuses else item_state.committed_state.get("status")
+            if previous_status != PreviewStatus.MEDIA_MISSING:
+                newly_media_missing += 1
+
+        return newly_media_missing, total_checked
+
+    def _queue_candidate_order_by(self):
+        return (
+            case((MediaItem.status == PreviewStatus.QUEUED, 0), else_=1),
+            MediaItem.is_priority.desc(),
+            MediaItem.priority_score.desc(),
+            MediaItem.queue_order.asc(),
+            MediaItem.updated_at.desc(),
+        )
+
     def validate_mount_paths(self) -> tuple[bool, list[str]]:
         """
         Validate that configured mount check paths exist and are accessible.
@@ -403,10 +485,7 @@ class Scheduler:
                     logger.debug("Mount validation disabled, skipping check")
                     return True, []
 
-                # If no paths configured, check common media locations
-                check_paths = []
-                if settings.mount_check_paths:
-                    check_paths = [p.strip() for p in settings.mount_check_paths.split(',') if p.strip()]
+                check_paths = self._build_mount_check_paths(settings.mount_check_paths)
 
                 if not check_paths:
                     logger.debug("No mount check paths configured, validation passes")
@@ -1006,32 +1085,27 @@ class Scheduler:
                     if not item.bundle_hash:
                         logger.debug(f"Item {item.id} ({item.title}) has no bundle_hash, querying Plex database")
                         try:
-                            import sqlite3
-                            db_path = os.path.join(self.config.plex_config_folder, 'Plug-in Support', 'Databases',
-                                                   'com.plexapp.plugins.library.db')
-                            if os.path.exists(db_path):
-                                conn = sqlite3.connect(db_path)
-                                cursor = conn.cursor()
-                                # Query media_parts.hash via JOIN (bundle hash is in media_parts, not metadata_items)
-                                query = """
-                                    SELECT media_parts.hash
-                                    FROM media_parts
-                                    JOIN media_items ON media_parts.media_item_id = media_items.id
-                                    WHERE media_items.metadata_item_id = ?
-                                    LIMIT 1
-                                """
-                                cursor.execute(query, (item.id,))
-                                result = cursor.fetchone()
-                                conn.close()
+                            from ..plex_client import open_plex_db
+                            conn = open_plex_db(self.config.plex_config_folder)
+                            cursor = conn.cursor()
+                            # Query media_parts.hash via JOIN (bundle hash is in media_parts, not metadata_items)
+                            query = """
+                                SELECT media_parts.hash
+                                FROM media_parts
+                                JOIN media_items ON media_parts.media_item_id = media_items.id
+                                WHERE media_items.metadata_item_id = ?
+                                LIMIT 1
+                            """
+                            cursor.execute(query, (item.id,))
+                            result = cursor.fetchone()
+                            conn.close()
 
-                                if result and result[0]:
-                                    item.bundle_hash = result[0]
-                                    # Update the item in the session
-                                    session.add(item)
-                                else:
-                                    logger.debug(f"No hash found in Plex database for item {item.id}")
+                            if result and result[0]:
+                                item.bundle_hash = result[0]
+                                # Update the item in the session
+                                session.add(item)
                             else:
-                                logger.warning(f"Plex database not found at: {db_path}")
+                                logger.debug(f"No hash found in Plex database for item {item.id}")
                         except Exception as e:
                             logger.warning(f"Failed to query Plex database for hash for item {item.id}: {e}")
 
@@ -1108,18 +1182,16 @@ class Scheduler:
             return {"error": "Scheduler not configured"}
 
         try:
-            import sqlite3
             import shutil
 
             # Get Plex database path
-            db_path = os.path.join(self.config.plex_config_folder, 'Plug-in Support', 'Databases', 'com.plexapp.plugins.library.db')
-
-            if not os.path.exists(db_path):
-                logger.error(f"Plex database not found at: {db_path}")
-                return {"error": "Plex database not found"}
-
             # Get all bundle hashes from Plex database (from media_parts, not metadata_items)
-            conn = sqlite3.connect(db_path)
+            try:
+                from ..plex_client import open_plex_db
+                conn = open_plex_db(self.config.plex_config_folder)
+            except FileNotFoundError:
+                logger.error("Plex database not found")
+                return {"error": "Plex database not found"}
             cursor = conn.cursor()
             cursor.execute("SELECT hash FROM media_parts WHERE hash IS NOT NULL")
             db_hashes = set(row[0] for row in cursor.fetchall())
@@ -1245,7 +1317,7 @@ class Scheduler:
                 for item in completed_items:
                     verified_count += 1
 
-                    # Check if BIF file exists
+                    # Check if BIF file exists for primary bundle hash
                     bif_exists = False
                     bif_path = None
 
@@ -1260,7 +1332,23 @@ class Scheduler:
                     else:
                         logger.debug(f"Item {item.id} ({item.title}) has no bundle_hash")
 
-                    # If BIF doesn't exist, track for moving
+                    # For multi-part items, also check all parts have BIF files
+                    if bif_exists and item.media_parts_info:
+                        try:
+                            import json
+                            parts = json.loads(item.media_parts_info)
+                            for part in parts:
+                                part_bif = part.get('bif_path')
+                                if part_bif and not os.path.isfile(part_bif):
+                                    bif_exists = False
+                                    bif_path = part_bif
+                                    if moved_count < 5:
+                                        logger.debug(f"Multi-part BIF not found: {part_bif}")
+                                    break
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+
+                    # If any BIF doesn't exist, track for moving
                     if not bif_exists:
                         missing_items.append((item, bif_path))
                         moved_count += 1
@@ -1816,6 +1904,15 @@ class Scheduler:
         # Check if BIF exists using pre-scanned map
         bif_exists = bundle_hash and bundle_hash in bundle_hash_map
 
+        # Check if ALL parts have BIF files (for multi-part items like 1080p + 4K)
+        all_parts_have_bif = bif_exists
+        if media_parts and len(media_parts) > 1:
+            all_parts_have_bif = all(
+                bh and bh in bundle_hash_map
+                for _, bh in media_parts
+                if bh  # Skip parts with no bundle hash
+            )
+
         # Check if media files exist (detect broken symlinks)
         media_exists = False
         if media_parts:
@@ -1829,7 +1926,7 @@ class Scheduler:
             if not media_exists:
                 initial_status = PreviewStatus.MEDIA_MISSING
                 initial_progress = 0
-            elif bif_exists:
+            elif all_parts_have_bif:
                 initial_status = PreviewStatus.COMPLETED
                 initial_progress = 100
             else:
@@ -1879,27 +1976,30 @@ class Scheduler:
                 db_item.added_at = added_at
 
             # Check if media files exist - if not, mark as MEDIA_MISSING
-            if not media_exists:
-                if db_item.status != PreviewStatus.MEDIA_MISSING:
-                    logger.info(f"Item {item_key} ({title}) has missing media files - marking as MEDIA_MISSING")
-                    db_item.status = PreviewStatus.MEDIA_MISSING
-                    db_item.progress = 0
-                    db_item.error_message = "Media file not found (broken symlink or deleted)"
-                    item_updated = True
+                if not media_exists:
+                    if db_item.status != PreviewStatus.MEDIA_MISSING:
+                        logger.info(f"Item {item_key} ({title}) has missing media files - marking as MEDIA_MISSING")
+                        db_item.status = PreviewStatus.MEDIA_MISSING
+                        db_item.progress = 0
+                        db_item.error_message = "Media file not found (broken symlink or deleted)"
+                        db_item.updated_at = datetime.utcnow()
+                        item_updated = True
             else:
-                # Media exists - check BIF status
+                # Media exists - check BIF status for ALL parts using filesystem scan
                 any_missing_bif = False
-                if media_parts_json:
-                    parts_data = json.loads(media_parts_json)
-                    any_missing_bif = any(part.get('bif_path') is None for part in parts_data)
+                if media_parts:
+                    for _, bh in media_parts:
+                        if bh and bh not in bundle_hash_map:
+                            any_missing_bif = True
+                            break
 
                 if db_item.status == PreviewStatus.COMPLETED and any_missing_bif:
-                    logger.info(f"Item {item_key} ({title}) is completed but has new parts without BIF files - resetting to missing")
+                    logger.info(f"Item {item_key} ({title}) is completed but has parts without BIF files on disk - resetting to missing")
                     db_item.status = PreviewStatus.MISSING
                     db_item.progress = 0
                     db_item.updated_at = datetime.utcnow()
                     item_updated = True
-                elif db_item.status != PreviewStatus.COMPLETED and bif_exists and not any_missing_bif:
+                elif db_item.status != PreviewStatus.COMPLETED and all_parts_have_bif:
                     db_item.status = PreviewStatus.COMPLETED
                     db_item.progress = 100
                     item_updated = True
@@ -2069,18 +2169,7 @@ class Scheduler:
                     logger.debug("No orphaned items found")
 
                 # Sanity check: Detect mass MEDIA_MISSING marking (likely mount issue)
-                # Count how many items would be newly marked as MEDIA_MISSING
-                newly_media_missing = 0
-                total_checked = 0
-                for item in chain(session.new, session.dirty):
-                    if isinstance(item, MediaItem):
-                        # Check if this is a newly marked MEDIA_MISSING item
-                        if hasattr(item, '__dict__') and '_sa_instance_state' in item.__dict__:
-                            # Get original state from session
-                            history = session.identity_map.get((MediaItem, item.id))
-                            if history and getattr(history, 'status', None) != PreviewStatus.MEDIA_MISSING and item.status == PreviewStatus.MEDIA_MISSING:
-                                newly_media_missing += 1
-                        total_checked += 1
+                newly_media_missing, total_checked = self._count_newly_media_missing_items(session)
 
                 # Get threshold from settings
                 mount_failure_threshold = 50.0  # Default
@@ -2159,14 +2248,11 @@ class Scheduler:
         fetch_limit = batch_size * 5 if is_rate_limited else batch_size
 
         with Session(engine) as session:
-            # Prioritize: Status is MISSING only (not QUEUED - those are already in the worker queue)
-            # Sort by:
-            # 1. priority_score desc (ranked automatic priority)
-            # 2. updated_at desc (Most recently changed first)
-            # 3. queue_order asc (Manual prioritization)
+            # Fetch MISSING and QUEUED items (QUEUED includes manually queued via "Top" button)
+            # Sort queued/manual work first, then scored automatic priority.
             statement = select(MediaItem).where(
-                MediaItem.status == PreviewStatus.MISSING
-            ).order_by(*self._priority_order_by()).limit(fetch_limit)
+                col(MediaItem.status).in_([PreviewStatus.MISSING, PreviewStatus.QUEUED])
+            ).order_by(*self._queue_candidate_order_by()).limit(fetch_limit)
 
             items = session.exec(statement).all()
 
@@ -2194,12 +2280,12 @@ class Scheduler:
 
             # Log the order of items being processed for debugging
             if items:
-                logger.debug(f"Processing batch of {len(items)} items (priority first, then most recently updated):")
+                logger.debug(f"Processing batch of {len(items)} items (queued first, then priority score):")
                 for idx, item in enumerate(items[:3]):  # Show first 3 items
                     updated_date = item.updated_at.strftime('%Y-%m-%d %H:%M') if item.updated_at else 'unknown'
                     priority_flag = " [PRIORITY]" if item.is_priority else ""
                     exempt_flag = " [EXEMPT]" if self._is_item_rate_limit_exempt(item) else ""
-                    logger.debug(f"  {idx+1}. {item.title} (updated: {updated_date}){priority_flag}{exempt_flag}")
+                    logger.debug(f"  {idx+1}. {item.title} (score: {item.priority_score}, updated: {updated_date}){priority_flag}{exempt_flag}")
 
             # Prepare for worker pool
             # worker_pool.process_items expects List[tuple(key, title, type)]
@@ -2236,11 +2322,10 @@ class Scheduler:
             current_fetch_limit = batch_size * 5 if current_rate_limited else batch_size
 
             with Session(engine) as session:
-                # Fetch items that are MISSING only (QUEUED items are already in the worker queue)
-                # Sort by priority first, then updated_at, then manual queue_order
+                # Fetch MISSING and QUEUED items (QUEUED includes manually queued via "Top" button)
                 statement = select(MediaItem).where(
-                    MediaItem.status == PreviewStatus.MISSING
-                ).order_by(*self._priority_order_by()).limit(current_fetch_limit)
+                    col(MediaItem.status).in_([PreviewStatus.MISSING, PreviewStatus.QUEUED])
+                ).order_by(*self._queue_candidate_order_by()).limit(current_fetch_limit)
 
                 items = session.exec(statement).all()
 
@@ -2306,15 +2391,28 @@ class Scheduler:
             for item_id, _, _ in process_list:
                 item = session.get(MediaItem, int(item_id))
                 if item:
-                    # Check if BIF file exists for this item
-                    bif_exists = False
+                    # Check if BIF file exists for ALL parts of this item
+                    all_bifs_exist = False
                     if item.bundle_hash:
                         bif_path = self._get_bif_path(item.bundle_hash)
                         if bif_path and os.path.isfile(bif_path):
-                            bif_exists = True
+                            all_bifs_exist = True
 
-                    # If BIF exists but status is not COMPLETED/FAILED, mark it as completed
-                    if bif_exists and item.status not in [PreviewStatus.COMPLETED, PreviewStatus.FAILED, PreviewStatus.SLOW_FAILED]:
+                    # For multi-part items, verify ALL parts have BIF files
+                    if all_bifs_exist and item.media_parts_info:
+                        try:
+                            import json
+                            parts = json.loads(item.media_parts_info)
+                            for part in parts:
+                                part_bif = part.get('bif_path')
+                                if part_bif and not os.path.isfile(part_bif):
+                                    all_bifs_exist = False
+                                    break
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+
+                    # If all BIFs exist but status is not COMPLETED/FAILED, mark it as completed
+                    if all_bifs_exist and item.status not in [PreviewStatus.COMPLETED, PreviewStatus.FAILED, PreviewStatus.SLOW_FAILED]:
                         logger.debug(f"Post-processing: Marking item {item_id} ({item.title}) as COMPLETED (BIF file exists)")
                         item.status = PreviewStatus.COMPLETED
                         item.progress = 100

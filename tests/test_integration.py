@@ -15,13 +15,14 @@ class TestFullPipeline:
     
     @patch('plex_generate_previews.media_processing.generate_bif')
     @patch('plex_generate_previews.media_processing.generate_images')
+    @patch('plex_generate_previews.plex_client.get_media_parts_from_database')
     @patch('os.path.isfile')
     @patch('os.path.isdir')
     @patch('os.makedirs')
     @patch('shutil.rmtree')
     def test_full_pipeline_single_video(self, mock_rmtree, mock_makedirs, mock_isdir, 
-                                        mock_isfile, mock_gen_images, mock_gen_bif, 
-                                        mock_config, plex_xml_movie_tree):
+                                        mock_isfile, mock_get_media_parts, mock_gen_images,
+                                        mock_gen_bif, mock_config, plex_xml_movie_tree):
         """Test processing a single video through the full pipeline."""
         from plex_generate_previews.worker import WorkerPool
         from plex_generate_previews.media_processing import process_item
@@ -43,11 +44,14 @@ class TestFullPipeline:
         mock_config.plex_local_videos_path_mapping = ""
         mock_config.plex_videos_path_mapping = ""
         mock_config.regenerate_thumbnails = False
+        mock_get_media_parts.return_value = [
+            ("/data/movies/Test Movie (2024)/Test Movie (2024).mkv", "abcdef1234567890")
+        ]
         
         # Simulate successful image generation
         mock_gen_images.return_value = (True, 3, False, 1.3, "1.0x")
         # Process single item
-        process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
+        process_item("54321", None, None, mock_config, mock_plex)
         
         # Verify pipeline executed
         assert mock_gen_images.called
@@ -146,13 +150,14 @@ class TestWorkerPoolIntegration:
     
     @patch('plex_generate_previews.media_processing.generate_bif')
     @patch('plex_generate_previews.media_processing.generate_images')
+    @patch('plex_generate_previews.plex_client.get_media_parts_from_database')
     @patch('os.path.isfile')
     @patch('os.path.isdir')
     @patch('os.makedirs')
     @patch('shutil.rmtree')
     def test_worker_pool_integration(self, mock_rmtree, mock_makedirs, mock_isdir, 
-                                     mock_isfile, mock_gen_images, mock_gen_bif, 
-                                     mock_config, plex_xml_movie_tree):
+                                     mock_isfile, mock_get_media_parts, mock_gen_images,
+                                     mock_gen_bif, mock_config, plex_xml_movie_tree):
         """Test worker pool coordinating multiple workers."""
         from plex_generate_previews.worker import WorkerPool
         
@@ -173,15 +178,18 @@ class TestWorkerPoolIntegration:
         mock_config.plex_local_videos_path_mapping = ""
         mock_config.plex_videos_path_mapping = ""
         mock_config.regenerate_thumbnails = False
+        mock_get_media_parts.return_value = [
+            ("/data/movies/Test Movie (2024)/Test Movie (2024).mkv", "abcdef1234567890")
+        ]
         
         # Create pool with multiple workers
         pool = WorkerPool(gpu_workers=0, cpu_workers=3, selected_gpus=[])
         
         # Test items
         items = [
-            ('/library/metadata/1', 'Movie 1', 'movie'),
-            ('/library/metadata/2', 'Movie 2', 'movie'),
-            ('/library/metadata/3', 'Movie 3', 'movie'),
+            ('1', 'Movie 1', 'movie'),
+            ('2', 'Movie 2', 'movie'),
+            ('3', 'Movie 3', 'movie'),
         ]
         
         # Mock progress manager
@@ -241,4 +249,3 @@ class TestWorkerPoolIntegration:
         # Total should equal input
         total = sum(w.completed for w in pool.workers)
         assert total == 9
-

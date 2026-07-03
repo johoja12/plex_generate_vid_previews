@@ -8,6 +8,8 @@ import sqlite3
 import sys
 import os
 
+__test__ = False
+
 def test_watch_history_query(plex_config_folder: str):
     """Test the watch history query against the Plex database."""
 

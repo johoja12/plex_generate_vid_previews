@@ -248,6 +248,12 @@ def _detect_codec_error(returncode: int, stderr_lines: List[str]) -> bool:
         # Generic codec errors (check these carefully - only in GPU context after failure)
         'unsupported codec',
         'codec not supported',
+        # VAAPI hardware decoder failures (corrupt streams that crash the HW decoder)
+        'failed to sync surface',
+        'internal decoding error',
+        'failed to transfer data to output frame',
+        # Generic hwaccel initialization failure
+        'hwaccel initialisation error',
     ]
     
     # Check for codec error patterns in stderr (primary detection method)
@@ -378,7 +384,7 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
         # Hardware acceleration flags must come BEFORE the input file (-i)
         args = [
             config.ffmpeg_path, "-loglevel", "info",
-            "-threads:v", "1",
+            "-filter_threads", "4",
         ]
 
         # Add hardware acceleration for decoding (before -i flag)
@@ -630,6 +636,27 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
         # Fallback: if we couldn't determine expected count, accept any images
         success = image_count > 0
 
+    # Check for GPU partial failures: hardware decoder crashed partway through
+    # (e.g., VAAPI "Failed to sync surface" producing only 19% of expected images)
+    # The image_count == 0 check above only catches total failures; this catches partial ones
+    if not success and gpu is not None and rc != 0:
+        if _detect_codec_error(rc, stderr_lines):
+            stderr_excerpt = '\n'.join(stderr_lines[-5:]) if stderr_lines else "No stderr output"
+            logger.warning(f"GPU hardware decoder failed partially for {video_file} "
+                          f"(exit code {rc}, {image_count}/{expected_image_count} images); "
+                          f"will hand off to CPU worker")
+            logger.debug(f"FFmpeg stderr excerpt (last 5 lines): {stderr_excerpt}")
+            # Clean up any partial/renamed images
+            for img in glob.glob(os.path.join(output_folder, '*.jpg')):
+                try:
+                    os.remove(img)
+                except Exception:
+                    pass
+            raise CodecNotSupportedError(
+                f"GPU hardware decoder failed for {video_file} (exit code {rc}, "
+                f"{image_count}/{expected_image_count} images)"
+            )
+
     if success:
         fallback_suffix = " (CPU fallback)" if did_cpu_fallback else (" (retry no-skip)" if did_retry else "")
         completion_info = f" ({completion_percentage:.1f}% of expected {expected_image_count})" if expected_image_count > 0 else ""
@@ -695,13 +722,30 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
                 for i, line in enumerate(stderr_lines[-10:]):
                     logger.debug(f"  {i+1:3d}: {line}")
 
-    return success, image_count, hw, seconds, speed
+    # Build error detail string for failed processing (persisted to DB by caller)
+    error_detail = None
+    if not success:
+        parts = []
+        if rc != 0:
+            parts.append(f"FFmpeg exit code {rc}")
+        if image_count == 0:
+            parts.append("0 images produced")
+        elif expected_image_count > 0:
+            parts.append(f"{image_count}/{expected_image_count} images ({completion_percentage:.1f}%)")
+        if stderr_lines:
+            # Include last 3 meaningful stderr lines (skip blank/progress lines)
+            meaningful = [l.strip() for l in stderr_lines if l.strip() and 'frame=' not in l and 'size=' not in l]
+            excerpt = meaningful[-3:] if meaningful else stderr_lines[-3:]
+            parts.append("stderr: " + " | ".join(excerpt))
+        error_detail = "; ".join(parts) if parts else "Unknown failure"
+
+    return success, image_count, hw, seconds, speed, error_detail
 
 
 def _setup_bundle_paths(bundle_hash: str, config: Config) -> Tuple[str, str, str]:
     """
     Set up all bundle-related paths.
-    
+
     Args:
         bundle_hash: Bundle hash from Plex
         config: Configuration object
@@ -798,17 +842,22 @@ def _generate_and_save_bif(media_file: str, tmp_path: str, index_bif: str,
         _cleanup_temp_directory(tmp_path)
         raise RuntimeError(f"Failed to generate images: {e}")
     
-    # Determine image count from result or by scanning
+    # Determine image count and error detail from result or by scanning
     image_count = 0
+    error_detail = None
     if isinstance(gen_result, tuple) and len(gen_result) >= 2:
         success, image_count = bool(gen_result[0]), int(gen_result[1])
+        if len(gen_result) >= 6:
+            error_detail = gen_result[5]
     else:
         if os.path.isdir(tmp_path):
             image_count = len(glob.glob(os.path.join(tmp_path, '*.jpg')))
-    
+
     if image_count == 0:
         logger.error(f'No thumbnails generated for {media_file}; skipping BIF creation')
         _cleanup_temp_directory(tmp_path)
+        if error_detail:
+            raise RuntimeError(f"FFmpeg failed for {media_file}: {error_detail}")
         raise RuntimeError(f"Thumbnail generation produced 0 images for {media_file}")
     
     # Generate BIF file
@@ -945,11 +994,13 @@ def process_item(item_key: str, gpu: Optional[str], gpu_device_path: Optional[st
     # Track if we successfully processed at least one media part
     processed_any = False
     processing_error = None
+    skip_reasons = []  # Collect specific skip/error reasons per media part
 
     for plex_file_path, bundle_hash in media_parts_data:
         # We now have both file path and bundle hash from the database
         if not plex_file_path:
             logger.warning(f'Skipping media part with no file path in item {item_key}')
+            skip_reasons.append("Media part has no file path in Plex database")
             continue
 
         logger.debug(f'Processing media part: {plex_file_path} (hash: {bundle_hash})')
@@ -974,14 +1025,31 @@ def process_item(item_key: str, gpu: Optional[str], gpu_device_path: Optional[st
         # Validate bundle_hash has sufficient length (at least 2 characters)
         if not bundle_hash or len(bundle_hash) < 2:
             hash_value = f'"{bundle_hash}"' if bundle_hash else '(empty)'
+            reason = f'Invalid or missing bundle hash {hash_value} for {media_file}'
             logger.warning(f'Skipping {media_file} due to invalid or missing bundle hash (API and database): {hash_value} (length: {len(bundle_hash) if bundle_hash else 0}, required: >= 2)')
+            skip_reasons.append(reason)
             continue
 
         if not os.path.isfile(media_file):
-            logger.warning(f'Skipping as file not found {media_file}')
+            # Build specific error reason
+            if os.path.islink(media_file):
+                try:
+                    symlink_target = os.readlink(media_file)
+                    reason = f'Broken symlink: {media_file} -> {symlink_target} (target not found)'
+                except OSError:
+                    reason = f'Broken symlink: {media_file} (cannot read target)'
+            elif os.path.exists(media_file):
+                reason = f'Path exists but is not a file: {media_file}'
+            else:
+                reason = f'File not found: {media_file}'
+                if media_file != plex_file_path:
+                    reason += f' (mapped from {plex_file_path})'
+
+            logger.warning(f'Skipping: {reason}')
+            skip_reasons.append(reason)
             logger.debug(f'Original Plex path: {plex_file_path}')
             logger.debug(f'Mapped path: {media_file}')
-            
+
             # Check if parent directory exists to help debug mapping issues
             parent_dir = os.path.dirname(media_file)
             if os.path.exists(parent_dir):
@@ -994,7 +1062,7 @@ def process_item(item_key: str, gpu: Optional[str], gpu_device_path: Optional[st
                     logger.debug(f'Could not list directory contents: {e}')
             else:
                 logger.debug(f'Parent directory does NOT exist: {parent_dir}')
-                
+
                 # Walk up path to find first existing directory
                 current_path = parent_dir
                 while current_path and current_path != '/':
@@ -1013,7 +1081,9 @@ def process_item(item_key: str, gpu: Optional[str], gpu_device_path: Optional[st
             indexes_path, index_bif, tmp_path = _setup_bundle_paths(bundle_hash, config)
             logger.debug(f"Bundle paths for {media_file}: hash={bundle_hash}, BIF={index_bif}")
         except Exception as e:
+            reason = f'Bundle path error for {media_file}: {type(e).__name__}: {str(e)}'
             logger.error(f'Error generating bundle_file for {media_file} due to {type(e).__name__}:{str(e)}')
+            skip_reasons.append(reason)
             continue
 
         if os.path.isfile(index_bif):
@@ -1022,7 +1092,9 @@ def process_item(item_key: str, gpu: Optional[str], gpu_device_path: Optional[st
                 try:
                     os.remove(index_bif)
                 except Exception as e:
+                    reason = f'Cannot delete existing BIF for {media_file}: {type(e).__name__}: {str(e)}'
                     logger.error(f'Error {type(e).__name__} deleting index file {media_file}: {str(e)}')
+                    skip_reasons.append(reason)
                     continue
             else:
                 # BIF already exists and we're not regenerating - SKIP this part
@@ -1037,6 +1109,7 @@ def process_item(item_key: str, gpu: Optional[str], gpu_device_path: Optional[st
 
         # Ensure directories exist
         if not _ensure_directories(indexes_path, tmp_path, media_file):
+            skip_reasons.append(f'Failed to create output directories for {media_file}')
             continue
 
         # Wrap progress callback to include bundle_hash and input file size
@@ -1086,9 +1159,16 @@ def process_item(item_key: str, gpu: Optional[str], gpu_device_path: Optional[st
         # No parts were successfully processed (or skipped with existing BIF)
         # This means all parts failed or were skipped without existing BIFs
         if processing_error is not None:
+            # Prepend skip reasons to provide full context
+            if skip_reasons:
+                detail = "; ".join(skip_reasons)
+                raise type(processing_error)(f"{str(processing_error)} [also skipped: {detail}]")
             raise processing_error
+        elif skip_reasons:
+            detail = "; ".join(skip_reasons)
+            raise RuntimeError(detail)
         else:
-            raise RuntimeError(f"No media parts were successfully processed for item {item_key}. All parts were skipped (e.g. missing bundle_hash or file not found).")
+            raise RuntimeError(f"No media parts were successfully processed for item {item_key}. All parts were skipped.")
     # Note: If processed_any is True (at least one part has a BIF, either existing or newly created),
     # we allow the item to succeed even if other parts failed. The UI will show per-part status
     # based on BIF file existence. This allows multi-part items to have mixed success/failure states.
