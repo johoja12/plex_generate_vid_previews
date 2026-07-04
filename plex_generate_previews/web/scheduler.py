@@ -1036,6 +1036,39 @@ class Scheduler:
             
         return bundle_hash_map
 
+    def _build_bif_map_for_bundle_hashes(self, bundle_hashes):
+        """
+        Build a BIF map by checking exact expected BIF paths for known Plex bundle hashes.
+
+        This avoids walking the entire Plex Media/localhost bundle tree over NFS during sync.
+        Returns the same shape as _scan_filesystem_for_bifs(): {bundle_hash: bif_path}.
+        """
+        if not self.config:
+            logger.error("Cannot build BIF map: scheduler not configured")
+            return {}
+
+        bundle_hash_map = {}
+        seen_hashes = set()
+
+        for raw_hash in bundle_hashes:
+            if not raw_hash:
+                continue
+
+            bundle_hash = str(raw_hash).lower()
+            if bundle_hash in seen_hashes:
+                continue
+            seen_hashes.add(bundle_hash)
+
+            bif_path = self._get_bif_path(bundle_hash)
+            if bif_path and os.path.exists(bif_path):
+                bundle_hash_map[bundle_hash] = bif_path
+
+        logger.debug(
+            f"Targeted BIF check found {len(bundle_hash_map)} existing BIF files "
+            f"from {len(seen_hashes)} bundle hashes"
+        )
+        return bundle_hash_map
+
     def discover_existing_bifs(self, confirm_threshold: bool = False):
         """Efficiently scan filesystem for BIF files and mark corresponding MISSING items as COMPLETED.
 
@@ -2046,13 +2079,7 @@ class Scheduler:
                 "episodes_deleted": 0,
             }
 
-            # Step 1: Scan filesystem once for all BIF files
-            logger.info("Scanning filesystem for BIF files...")
-            bif_scan_start = time.time()
-            bundle_hash_map = self._scan_filesystem_for_bifs()
-            logger.info(f"Found {len(bundle_hash_map)} existing BIF files in {time.time() - bif_scan_start:.2f}s")
-
-            # Step 2: Get items from Plex
+            # Step 1: Get items from Plex
             logger.info("Fetching items from Plex...")
             plex_fetch_start = time.time()
             plex = plex_server(self.config)
@@ -2079,7 +2106,35 @@ class Scheduler:
 
             logger.info(f"Fetched {len(all_items)} items from Plex in {time.time() - plex_fetch_start:.2f}s")
 
-            # Step 2.5: Detect scored priority items from Plex
+            # Step 2: Batch query all media parts at once
+            logger.info("Batch querying media parts from Plex database...")
+            batch_query_start = time.time()
+            all_rating_keys = [int(item[1]) for item in all_items]
+            media_parts_map = get_all_media_parts_batch(self.config.plex_config_folder, all_rating_keys)
+            logger.info(f"Queried media parts for {len(all_rating_keys)} items in {time.time() - batch_query_start:.2f}s")
+
+            # Step 3: Check exact expected BIF paths only for current Plex bundle hashes.
+            logger.info("Checking BIF files for current Plex items...")
+            bif_scan_start = time.time()
+            bundle_hashes_to_check = [
+                bundle_hash
+                for _, _, _, _, bundle_hash, _ in all_items
+                if bundle_hash
+            ]
+            for media_parts in media_parts_map.values():
+                bundle_hashes_to_check.extend(
+                    bundle_hash
+                    for _, bundle_hash in media_parts
+                    if bundle_hash
+                )
+            unique_bundle_hashes = list(dict.fromkeys(str(bundle_hash).lower() for bundle_hash in bundle_hashes_to_check))
+            bundle_hash_map = self._build_bif_map_for_bundle_hashes(unique_bundle_hashes)
+            logger.info(
+                f"Found {len(bundle_hash_map)} existing BIF files from "
+                f"{len(unique_bundle_hashes)} bundle hashes in {time.time() - bif_scan_start:.2f}s"
+            )
+
+            # Step 3.5: Detect scored priority items from Plex
             missing_rating_keys = {
                 int(item_key)
                 for _, item_key, _, _, bundle_hash, _ in all_items
@@ -2087,13 +2142,6 @@ class Scheduler:
             }
             priority_item_keys = self.detect_priority_items(plex, missing_rating_keys=missing_rating_keys)
             logger.debug(f"Priority detection complete: {len(priority_item_keys)} items")
-
-            # Step 3: Batch query all media parts at once
-            logger.info("Batch querying media parts from Plex database...")
-            batch_query_start = time.time()
-            all_rating_keys = [int(item[1]) for item in all_items]
-            media_parts_map = get_all_media_parts_batch(self.config.plex_config_folder, all_rating_keys)
-            logger.info(f"Queried media parts for {len(all_rating_keys)} items in {time.time() - batch_query_start:.2f}s")
 
             # Step 4: Process items in parallel with threading
             logger.info(f"Processing {len(all_items)} items with parallel threads...")

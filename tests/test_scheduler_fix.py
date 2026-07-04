@@ -1,5 +1,7 @@
 import os
 import pytest
+import json
+import asyncio
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 from sqlalchemy import inspect
@@ -9,6 +11,7 @@ from plex_generate_previews.web.models import MediaItem, MediaType, PreviewStatu
 from plex_generate_previews.web.priority import PriorityInfo, add_reason
 from plex_generate_previews.web.main import priority_payload
 from plex_generate_previews.web import scheduler as scheduler_module
+from plex_generate_previews.web import main as main_module
 from plex_generate_previews.web.scheduler import Scheduler
 from plex_generate_previews.config import Config
 
@@ -83,6 +86,46 @@ def test_scan_filesystem_for_bifs_with_stripped_hash_bif(temp_dir, mock_config):
 
     assert bug_full_bundle_hash in bundle_hash_map_retest
     assert bundle_hash_map_retest[bug_full_bundle_hash] == bug_mock_bif_path
+
+
+def test_build_bif_map_for_bundle_hashes_checks_only_known_hashes(temp_dir, mock_config, monkeypatch):
+    plex_config_path = os.path.join(temp_dir, "plex_config")
+    mock_config.plex_config_folder = plex_config_path
+
+    existing_hash = "98ee3ecdf4aba34b7708a7d8c92422f4e96eebf2"
+    missing_hash = "e730b9ff1874a14b1e4f09f671a1f278531d04fb"
+    existing_bif_path = os.path.join(
+        plex_config_path,
+        "Media",
+        "localhost",
+        existing_hash[0],
+        f"{existing_hash[1:]}.bundle",
+        "Contents",
+        "Indexes",
+        "index-sd.bif",
+    )
+    os.makedirs(os.path.dirname(existing_bif_path), exist_ok=True)
+    with open(existing_bif_path, "w") as f:
+        f.write("dummy bif content")
+
+    checked_paths = []
+    real_exists = os.path.exists
+
+    def tracking_exists(path):
+        checked_paths.append(path)
+        return real_exists(path)
+
+    monkeypatch.setattr(scheduler_module.os.path, "exists", tracking_exists)
+
+    scheduler = Scheduler()
+    scheduler.config = mock_config
+
+    result = scheduler._build_bif_map_for_bundle_hashes(
+        [existing_hash, missing_hash, existing_hash, None, ""]
+    )
+
+    assert result == {existing_hash: existing_bif_path}
+    assert checked_paths == [existing_bif_path, scheduler._get_bif_path(missing_hash)]
 
 
 def test_mediaitem_has_priority_score_metadata_columns():
@@ -177,6 +220,168 @@ def test_priority_ordering_uses_score_before_updated_at():
         ).all()
 
     assert [row.id for row in rows] == [2, 1]
+
+
+def test_sync_library_uses_targeted_bif_checks_not_full_scan(mock_config, monkeypatch):
+    scheduler = Scheduler()
+    scheduler.config = mock_config
+    scheduler.sync_in_progress = False
+
+    class FakePlex:
+        pass
+
+    class FakeSection:
+        title = "Movies"
+
+    item_key = 123
+    bundle_hash = "98ee3ecdf4aba34b7708a7d8c92422f4e96eebf2"
+    added_at = datetime(2026, 1, 1)
+
+    monkeypatch.setattr(scheduler_module, "plex_server", lambda config: FakePlex())
+    monkeypatch.setattr(
+        scheduler_module,
+        "get_library_sections",
+        lambda plex, config, database_only=True: [
+            (FakeSection(), [(item_key, "Movie", "movie", bundle_hash, added_at)])
+        ],
+    )
+    monkeypatch.setattr(
+        scheduler_module,
+        "get_all_media_parts_batch",
+        lambda plex_config_folder, rating_keys: {
+            item_key: [("/mnt/plex/movie.mkv", bundle_hash)]
+        },
+    )
+    monkeypatch.setattr(Scheduler, "validate_mount_paths", lambda self: (True, []))
+    monkeypatch.setattr(Scheduler, "detect_priority_items", lambda self, plex, missing_rating_keys=None: {})
+    monkeypatch.setattr(Scheduler, "_count_newly_media_missing_items", lambda self, session: (0, 1))
+    monkeypatch.setattr(scheduler_module.os.path, "exists", lambda path: True)
+
+    full_scan_called = False
+
+    def fail_full_scan(self):
+        nonlocal full_scan_called
+        full_scan_called = True
+        raise AssertionError("_scan_filesystem_for_bifs should not run during sync_library")
+
+    targeted_calls = []
+
+    def fake_targeted_scan(self, bundle_hashes):
+        targeted_calls.append(list(bundle_hashes))
+        return {bundle_hash: self._get_bif_path(bundle_hash)}
+
+    monkeypatch.setattr(Scheduler, "_scan_filesystem_for_bifs", fail_full_scan)
+    monkeypatch.setattr(Scheduler, "_build_bif_map_for_bundle_hashes", fake_targeted_scan)
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+    monkeypatch.setattr(scheduler_module, "engine", engine)
+
+    scheduler.sync_library()
+
+    assert full_scan_called is False
+    assert targeted_calls == [[bundle_hash]]
+
+    with Session(engine) as session:
+        item = session.get(MediaItem, item_key)
+        settings = session.get(scheduler_module.AppSettings, 1)
+
+    assert item is not None
+    assert item.status == PreviewStatus.COMPLETED
+    assert json.loads(settings.last_sync_summary) == {
+        "movies_added": 1,
+        "movies_updated": 0,
+        "movies_deleted": 0,
+        "episodes_added": 0,
+        "episodes_updated": 0,
+        "episodes_deleted": 0,
+    }
+
+
+def test_sync_library_targeted_bif_checks_include_media_part_hashes(mock_config, monkeypatch):
+    scheduler = Scheduler()
+    scheduler.config = mock_config
+
+    class FakePlex:
+        pass
+
+    class FakeSection:
+        title = "Movies"
+
+    item_key = 123
+    primary_hash = "98ee3ecdf4aba34b7708a7d8c92422f4e96eebf2"
+    part_hash = "e730b9ff1874a14b1e4f09f671a1f278531d04fb"
+
+    monkeypatch.setattr(scheduler_module, "plex_server", lambda config: FakePlex())
+    monkeypatch.setattr(
+        scheduler_module,
+        "get_library_sections",
+        lambda plex, config, database_only=True: [
+            (FakeSection(), [(item_key, "Movie", "movie", primary_hash, datetime(2026, 1, 1))])
+        ],
+    )
+    monkeypatch.setattr(
+        scheduler_module,
+        "get_all_media_parts_batch",
+        lambda plex_config_folder, rating_keys: {
+            item_key: [
+                ("/mnt/plex/movie-1080p.mkv", primary_hash),
+                ("/mnt/plex/movie-4k.mkv", part_hash),
+            ]
+        },
+    )
+    monkeypatch.setattr(Scheduler, "validate_mount_paths", lambda self: (True, []))
+    monkeypatch.setattr(Scheduler, "detect_priority_items", lambda self, plex, missing_rating_keys=None: {})
+    monkeypatch.setattr(Scheduler, "_count_newly_media_missing_items", lambda self, session: (0, 1))
+    monkeypatch.setattr(scheduler_module.os.path, "exists", lambda path: True)
+
+    targeted_calls = []
+
+    def fake_targeted_scan(self, bundle_hashes):
+        targeted_calls.append(list(bundle_hashes))
+        return {
+            primary_hash: self._get_bif_path(primary_hash),
+            part_hash: self._get_bif_path(part_hash),
+        }
+
+    monkeypatch.setattr(Scheduler, "_build_bif_map_for_bundle_hashes", fake_targeted_scan)
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+    monkeypatch.setattr(scheduler_module, "engine", engine)
+
+    scheduler.sync_library()
+
+    assert targeted_calls == [[primary_hash, part_hash]]
+
+    with Session(engine) as session:
+        item = session.get(MediaItem, item_key)
+
+    assert item.status == PreviewStatus.COMPLETED
+
+
+def test_full_bif_scan_endpoint_reports_count_duration_and_samples(monkeypatch):
+    bif_map = {
+        "98ee3ecdf4aba34b7708a7d8c92422f4e96eebf2": "/config/plex/Media/localhost/9/8ee.bundle/Contents/Indexes/index-sd.bif",
+        "e730b9ff1874a14b1e4f09f671a1f278531d04fb": "/config/plex/Media/localhost/e/730.bundle/Contents/Indexes/index-sd.bif",
+    }
+
+    monkeypatch.setattr(main_module.scheduler, "config", object())
+    monkeypatch.setattr(main_module.scheduler, "_scan_filesystem_for_bifs", lambda: bif_map)
+
+    result = asyncio.run(main_module.scan_all_bifs(user="test"))
+
+    assert result["found"] == 2
+    assert result["duration_seconds"] >= 0
+    assert result["sample_hashes"] == list(bif_map.keys())
 
 
 def test_clear_completed_priority_metadata_clears_all_priority_fields():

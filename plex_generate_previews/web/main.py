@@ -3,6 +3,7 @@ import requests
 import uuid
 import hashlib
 import json
+import time
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Depends, Form, HTTPException, status, Cookie, Body
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
@@ -333,6 +334,23 @@ async def reset_failed_items(
 
     count = result.rowcount if hasattr(result, 'rowcount') else 0
     return {"message": f"Reset {count} failed items to MISSING status"}
+
+@app.post("/api/settings/scan-all-bifs")
+async def scan_all_bifs(user: str = Depends(login_required)):
+    """Run the full Plex Media/localhost BIF scan as an explicit maintenance action."""
+    if not scheduler.config:
+        raise HTTPException(status_code=400, detail="Scheduler not configured")
+
+    start = time.time()
+    bundle_hash_map = scheduler._scan_filesystem_for_bifs()
+    duration_seconds = time.time() - start
+
+    return {
+        "found": len(bundle_hash_map),
+        "duration_seconds": duration_seconds,
+        "sample_hashes": list(bundle_hash_map.keys())[:5],
+        "sample_paths": list(bundle_hash_map.values())[:5],
+    }
 
 @app.get("/api/settings/verify-debug")
 async def verify_debug(user: str = Depends(login_required)):

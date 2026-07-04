@@ -47,3 +47,12 @@ def test_template_routes_use_request_first_signature(monkeypatch):
         ("setup.html", {}),
         ("index.html", {"user": "test"}),
     ]
+
+
+def test_settings_template_includes_full_bif_scan_tool():
+    template = main.templates.get_template("settings.html")
+    source = template.render(user="test")
+
+    assert "Full BIF Scan" in source
+    assert "scanAllBifs" in source
+    assert "/api/settings/scan-all-bifs" in source
