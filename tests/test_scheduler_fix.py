@@ -480,6 +480,33 @@ def test_detect_priority_items_returns_scored_priority_infos(monkeypatch):
     assert result[2].score == 800
 
 
+def test_collect_priority_hub_items_keeps_only_first_twenty_movies():
+    scheduler = Scheduler()
+    movies = [
+        MagicMock(ratingKey=str(index), type="movie", title=f"Movie {index}")
+        for index in range(1, 26)
+    ]
+    show = MagicMock(ratingKey="1000", type="show", title="TV Show")
+    hub = MagicMock(title="Trending", items=movies + [show])
+    section = MagicMock()
+    section.hubs.return_value = [hub]
+    plex = MagicMock()
+    plex.library.sections.return_value = [section]
+
+    result = scheduler._collect_priority_hub_items(plex)
+
+    assert [
+        item.rating_key
+        for item in result["Trending"]
+        if item.item_type == "movie"
+    ] == list(range(1, 21))
+    assert [
+        (item.rating_key, item.item_type)
+        for item in result["Trending"]
+        if item.item_type != "movie"
+    ] == [(1000, "show")]
+
+
 def test_refresh_priority_metadata_updates_existing_pending_rows(monkeypatch):
     engine = create_engine(
         "sqlite://",
