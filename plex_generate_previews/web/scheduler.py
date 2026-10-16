@@ -38,6 +38,18 @@ from .priority import (
 import os
 from datetime import datetime, timezone, timedelta
 
+
+def _ensure_aware(dt):
+    """Return a timezone-aware datetime.
+
+    SQLite/SQLAlchemy may hand back naive datetimes even when we stored
+    aware ones. Assume naive values are UTC.
+    """
+    if dt is not None and dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 class DbProgressManager:
     def __init__(self):
         # Track last update time per worker to throttle DB writes
@@ -254,7 +266,7 @@ class DbProgressManager:
                 item.status = PreviewStatus.PROCESSING
 
             item.progress = 0
-            item.last_attempted_at = datetime.utcnow()
+            item.last_attempted_at = datetime.now(timezone.utc)
             if bundle_hash:
                 item.current_processing_bundle_hash = bundle_hash
 
@@ -302,7 +314,7 @@ class Scheduler:
         )
 
     def _apply_priority_info_to_item(self, item: MediaItem, priority_info: Optional[PriorityInfo]) -> bool:
-        calculated_at = datetime.utcnow()
+        calculated_at = datetime.now(timezone.utc)
         if priority_info and priority_info.score > 0:
             priority_reasons = json.dumps(priority_info.reasons, separators=(",", ":"))
             changed = (
@@ -421,30 +433,42 @@ class Scheduler:
         finally:
             self._priority_refresh_lock.release()
 
+    def _translate_plex_path(self, plex_path: str) -> str:
+        """Translate a Plex-side path (e.g. /data/...) to the local path
+        (e.g. /media/...) using the configured path mappings."""
+        if not plex_path or not self.config:
+            return plex_path
+        mappings = getattr(self.config, "plex_path_mappings", None) or []
+        # Most specific (longest) remote prefix wins
+        for remote, local in sorted(mappings, key=lambda x: len(x[0]), reverse=True):
+            if remote and plex_path.startswith(remote):
+                return local + plex_path[len(remote):]
+        # Fallback to legacy single mapping
+        remote = getattr(self.config, "plex_videos_path_mapping", "")
+        local = getattr(self.config, "plex_local_videos_path_mapping", "")
+        if remote and local and plex_path.startswith(remote):
+            return local + plex_path[len(remote):]
+        return plex_path
+
     def _build_mount_check_paths(self, configured_paths: Optional[str]) -> list[str]:
         """
         Build the mount paths that must be available before sync can run.
 
-        We always include the configured Plex config folder plus the media and
-        remote paths used by the preview generator, even if the persisted
-        settings only list a subset of paths.
+        Only checks paths the user explicitly configured (via the
+        mount_check_paths setting) plus the Plex config folder.
+        Previously this hardcoded the upstream author's personal paths
+        (/mnt/plex, /mnt/remote/...) which broke sync for everyone else.
         """
         paths: list[str] = []
 
         if configured_paths:
             paths.extend([p.strip() for p in configured_paths.split(',') if p.strip()])
 
-        required_paths = [
-            "/mnt/plex",
-            "/mnt/remote/infinidysk/.ids",
-            "/mnt/remote/debrid",
-        ]
         plex_config_folder = getattr(self.config, "plex_config_folder", None) if self.config else None
-        required_paths.append(plex_config_folder or "/plex-config")
-
-        for path in required_paths:
-            if path not in paths:
-                paths.append(path)
+        # Only include the Plex config folder if it's a real local path
+        # (not a placeholder default)
+        if plex_config_folder and plex_config_folder not in paths:
+            paths.append(plex_config_folder)
 
         return paths
 
@@ -615,7 +639,7 @@ class Scheduler:
                         session.commit()
                     return False
 
-                now = datetime.utcnow()
+                now = datetime.now(timezone.utc)
                 limit_bytes = int(settings.data_limit_gb_per_hour * 1024 * 1024 * 1024)
                 
                 # Check if an hour has passed since the current tracking period started
@@ -919,10 +943,12 @@ class Scheduler:
 
             if self.config:
                 # Update last_sync_time from DB if available
+                # (SQLite returns naive datetimes — normalize to aware for
+                # safe arithmetic with datetime.now(timezone.utc))
                 if db_config and db_config.last_sync_time:
-                    self.last_sync_time = db_config.last_sync_time
+                    self.last_sync_time = _ensure_aware(db_config.last_sync_time)
                 else:
-                    self.last_sync_time = datetime.fromtimestamp(0) # Epoch start
+                    self.last_sync_time = datetime.fromtimestamp(0, tz=timezone.utc) # Epoch start
 
                 # Load paused state from DB if available
                 if db_config and hasattr(db_config, 'queue_paused'):
@@ -977,10 +1003,10 @@ class Scheduler:
                     logger.debug(f"Could not load sync_interval from settings, using default: {e}")
 
                 # Check if sync is needed (based on sync_interval or when forced)
-                # Use datetime subtraction to avoid timezone issues with .timestamp()
-                # (naive UTC datetimes compared with naive UTC datetimes)
+                # Normalize to aware datetimes — SQLite may return naive values.
                 if self.last_sync_time:
-                    seconds_since_sync = (datetime.utcnow() - self.last_sync_time).total_seconds()
+                    last_sync = _ensure_aware(self.last_sync_time)
+                    seconds_since_sync = (datetime.now(timezone.utc) - last_sync).total_seconds()
                     sync_needed = self.force_sync or seconds_since_sync > sync_interval
                 else:
                     sync_needed = True
@@ -1515,18 +1541,23 @@ class Scheduler:
                         try:
                             parts = json.loads(item.media_parts_info)
                             # Check if at least one part exists
+                            # (translate Plex paths to local paths first)
                             for part in parts:
                                 file_path = part.get('file_path')
-                                if file_path and os.path.exists(file_path):
+                                local_path = self._translate_plex_path(file_path) if file_path else None
+                                if local_path and os.path.exists(local_path):
                                     media_exists = True
                                     break
                         except (json.JSONDecodeError, KeyError):
                             # If we can't parse media_parts_info, check file_path as fallback
-                            if item.file_path and os.path.exists(item.file_path):
+                            local_fp = self._translate_plex_path(item.file_path) if item.file_path else None
+                            if local_fp and os.path.exists(local_fp):
                                 media_exists = True
-                    elif item.file_path and os.path.exists(item.file_path):
-                        # Fallback to file_path for backwards compatibility
-                        media_exists = True
+                    elif item.file_path:
+                        local_fp = self._translate_plex_path(item.file_path)
+                        if local_fp and os.path.exists(local_fp):
+                            # Fallback to file_path for backwards compatibility
+                            media_exists = True
 
                     if not media_exists:
                         # Media file doesn't exist (broken symlink or deleted)
@@ -1540,7 +1571,7 @@ class Scheduler:
                         item.status = PreviewStatus.MISSING
                         item.progress = 0
                         # Update timestamp so it gets re-queued soon
-                        item.updated_at = datetime.utcnow()
+                        item.updated_at = datetime.now(timezone.utc)
 
                     session.add(item)
 
@@ -1588,7 +1619,7 @@ class Scheduler:
                     )
 
             episodes = self._read_priority_episode_rows()
-            now = datetime.utcnow().replace(tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc).replace(tzinfo=timezone.utc)
             priority_infos = build_priority_infos(
                 watch_events=self._read_priority_watch_events(history_limit),
                 episodes=episodes,
@@ -1770,7 +1801,7 @@ class Scheduler:
                             "view_offset": int(getattr(item, "viewOffset", 0) or 0),
                             "duration": int(getattr(item, "duration", 0) or 0),
                         })
-                self._playback_snapshot = {"available": True, "sessions": sessions, "updated_at": datetime.utcnow().isoformat() + "Z"}
+                self._playback_snapshot = {"available": True, "sessions": sessions, "updated_at": datetime.now(timezone.utc).isoformat() + "Z"}
             except Exception:
                 logger.warning("Plex playback sessions unavailable")
                 self._playback_snapshot = {"available": False, "sessions": [], "updated_at": None}
@@ -1843,6 +1874,11 @@ class Scheduler:
                     try:
                         rating_key = int(getattr(item, "ratingKey"))
                     except (TypeError, ValueError):
+                        continue
+                    except Exception as e:
+                        # plexapi may raise NotFound etc. when lazy-loading
+                        # items (e.g. stale music station refs) — skip them
+                        logger.debug(f"Skipping unreadable hub item: {e}")
                         continue
 
                     item_type = getattr(item, "type", "")
@@ -2129,10 +2165,13 @@ class Scheduler:
             )
 
         # Check if media files exist (detect broken symlinks)
+        # Note: file_path comes from Plex's DB (e.g. /data/...) — translate
+        # to local paths (e.g. /media/...) via path mappings before checking.
         media_exists = False
         if media_parts:
             for file_path, _ in media_parts:
-                if file_path and os.path.exists(file_path):
+                local_path = self._translate_plex_path(file_path) if file_path else None
+                if local_path and os.path.exists(local_path):
                     media_exists = True
                     break
 
@@ -2157,7 +2196,7 @@ class Scheduler:
                 progress=initial_progress,
                 bundle_hash=bundle_hash,
                 media_parts_info=media_parts_json,
-                added_at=added_at if added_at else datetime.utcnow(),
+                added_at=_ensure_aware(added_at) if added_at else datetime.now(timezone.utc),
                 error_message="Media file not found (broken symlink or deleted)" if not media_exists else None,
             )
             self._apply_priority_info_to_item(
@@ -2186,9 +2225,10 @@ class Scheduler:
             if media_parts_json:
                 db_item.media_parts_info = media_parts_json
 
-            # Update added_at if differs
-            if added_at and db_item.added_at != added_at:
-                db_item.added_at = added_at
+            # Update added_at if differs (normalize to aware first)
+            added_at_aware = _ensure_aware(added_at) if added_at else None
+            if added_at_aware and _ensure_aware(db_item.added_at) != added_at_aware:
+                db_item.added_at = added_at_aware
 
             # Check if media files exist - if not, mark as MEDIA_MISSING
                 if not media_exists:
@@ -2197,7 +2237,7 @@ class Scheduler:
                         db_item.status = PreviewStatus.MEDIA_MISSING
                         db_item.progress = 0
                         db_item.error_message = "Media file not found (broken symlink or deleted)"
-                        db_item.updated_at = datetime.utcnow()
+                        db_item.updated_at = datetime.now(timezone.utc)
                         item_updated = True
             else:
                 # Media exists - check BIF status for ALL parts using filesystem scan
@@ -2212,7 +2252,7 @@ class Scheduler:
                     logger.info(f"Item {item_key} ({title}) is completed but has parts without BIF files on disk - resetting to missing")
                     db_item.status = PreviewStatus.MISSING
                     db_item.progress = 0
-                    db_item.updated_at = datetime.utcnow()
+                    db_item.updated_at = datetime.now(timezone.utc)
                     item_updated = True
                 elif db_item.status != PreviewStatus.COMPLETED and all_parts_have_bif:
                     db_item.status = PreviewStatus.COMPLETED
@@ -2223,7 +2263,7 @@ class Scheduler:
                     db_item.status = PreviewStatus.MISSING
                     db_item.progress = 0
                     db_item.error_message = None
-                    db_item.updated_at = datetime.utcnow()
+                    db_item.updated_at = datetime.now(timezone.utc)
                     item_updated = True
 
             stat_type = None
@@ -2435,12 +2475,12 @@ class Scheduler:
                 settings = settings_session.get(AppSettings, 1)
                 if not settings:
                     settings = AppSettings(id=1) # Should exist if config was loaded
-                settings.last_sync_time = datetime.utcnow()
+                settings.last_sync_time = datetime.now(timezone.utc)
                 settings.last_sync_summary = json.dumps(sync_stats)
                 settings_session.add(settings)
                 settings_session.commit()
                 new_last_sync_time = settings.last_sync_time # Extract value while session is open
-            self.last_sync_time = new_last_sync_time # Assign after session is closed
+            self.last_sync_time = _ensure_aware(new_last_sync_time) # Assign after session is closed
 
             total_sync_time = time.time() - sync_start_time
             logger.info(f"Library sync complete in {total_sync_time:.2f}s. {sync_stats}")

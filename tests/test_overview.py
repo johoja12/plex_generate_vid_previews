@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 import pytest
@@ -24,7 +24,7 @@ def item(id, **kwargs):
 
 
 def test_hourly_count_is_unique_and_ignores_metadata_timestamps(db):
-    now = datetime(2026, 10, 12, 12)
+    now = datetime(2026, 10, 12, 12, tzinfo=timezone.utc)
     db.add(item(1, status=PreviewStatus.COMPLETED, updated_at=now))
     db.add(AppSettings(id=1))
     for key, minutes in [(1, 5), (1, 15), (2, 60), (3, 61), (4, -1)]:

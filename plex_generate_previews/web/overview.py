@@ -1,6 +1,6 @@
 """Dashboard summaries and durable generated-preview completion events."""
 from collections import Counter
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import json
 from sqlmodel import select, func, col
 from .models import AppSettings, MediaItem, PreviewCompletion, PreviewStatus
@@ -14,7 +14,7 @@ def record_completion(session, item, previous_status, data):
 
 
 def overview_summary(session, now=None):
-    now = now or datetime.utcnow()
+    now = now or datetime.now(timezone.utc)
     cutoff = now - timedelta(hours=1)
     counts = {status.name: count for status, count in session.exec(
         select(MediaItem.status, func.count()).group_by(MediaItem.status)).all()}
