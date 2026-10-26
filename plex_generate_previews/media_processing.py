@@ -111,6 +111,48 @@ def detect_hdr_ffprobe(video_file: str, ffprobe_path: str = "ffprobe", timeout: 
         return False
 
 
+def probe_video_duration(video_file: str, ffprobe_path: str, timeout: float = 10.0) -> Optional[float]:
+    """Read the video timeline without treating longer subtitle tracks as video.
+
+    Ambiguous multi-video inputs and unavailable metadata retain the container
+    duration fallback. Never derive expected coverage from generated frame count.
+    """
+    import json
+    import math
+
+    try:
+        result = subprocess.run(
+            [ffprobe_path, "-v", "error", "-analyzeduration", "5000000",
+             "-probesize", "5000000", "-select_streams", "v",
+             "-show_entries", "stream=duration:stream_tags=DURATION",
+             "-of", "json", video_file],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=timeout,
+        )
+        if result.returncode != 0:
+            return None
+        streams = json.loads(result.stdout).get("streams", [])
+        if len(streams) != 1:
+            return None
+        stream = streams[0]
+        try:
+            duration = float(stream.get("duration", "nan"))
+        except (ValueError, TypeError):
+            duration = float("nan")
+        if math.isfinite(duration) and duration > 0:
+            return duration
+        tag = stream.get("tags", {}).get("DURATION", "")
+        match = re.fullmatch(r"(\d+):([0-5]\d):([0-5]\d(?:\.\d+)?)", tag)
+        if match:
+            hours, minutes, seconds = map(float, match.groups())
+            duration = hours * 3600 + minutes * 60 + seconds
+            if math.isfinite(duration) and duration > 0:
+                return duration
+    except (OSError, subprocess.TimeoutExpired, ValueError, TypeError, AttributeError):
+        pass
+    return None
+
+
 class CodecNotSupportedError(Exception):
     """
     Exception raised when a video codec is not supported by GPU hardware.
@@ -571,6 +613,11 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
     
     # Count images first to see if we have any (even if rc != 0, we might have partial success)
     image_count = len(glob.glob(os.path.join(output_folder, 'img*.jpg')))
+
+    # Container duration may include subtitles extending beyond the video.
+    video_duration = probe_video_duration(video_file, ffprobe_path)
+    if video_duration is not None:
+        total_duration = video_duration
 
     # Calculate expected number of images based on video duration
     # We need this to determine if the processing was interrupted early
