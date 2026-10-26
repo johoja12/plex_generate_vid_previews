@@ -485,7 +485,7 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
             while proc.poll() is None:
                 if os.path.exists(output_file):
                     try:
-                        with open(output_file, 'r', encoding='utf-8') as f:
+                        with open(output_file, 'r', encoding='utf-8', errors='replace') as f:
                             lines = f.readlines()
                             if len(lines) > line_count:
                                 for i in range(line_count, len(lines)):
@@ -501,7 +501,7 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
             # Process any remaining data
             if os.path.exists(output_file):
                 try:
-                    with open(output_file, 'r', encoding='utf-8') as f:
+                    with open(output_file, 'r', encoding='utf-8', errors='replace') as f:
                         lines = f.readlines()
                         if len(lines) > line_count:
                             for i in range(line_count, len(lines)):
