@@ -2191,14 +2191,14 @@ class Scheduler:
                 db_item.added_at = added_at
 
             # Check if media files exist - if not, mark as MEDIA_MISSING
-                if not media_exists:
-                    if db_item.status != PreviewStatus.MEDIA_MISSING:
-                        logger.info(f"Item {item_key} ({title}) has missing media files - marking as MEDIA_MISSING")
-                        db_item.status = PreviewStatus.MEDIA_MISSING
-                        db_item.progress = 0
-                        db_item.error_message = "Media file not found (broken symlink or deleted)"
-                        db_item.updated_at = datetime.utcnow()
-                        item_updated = True
+            if not media_exists:
+                if db_item.status != PreviewStatus.MEDIA_MISSING:
+                    logger.info(f"Item {item_key} ({title}) has missing media files - marking as MEDIA_MISSING")
+                    db_item.status = PreviewStatus.MEDIA_MISSING
+                    db_item.progress = 0
+                    db_item.error_message = "Media file not found (broken symlink or deleted)"
+                    db_item.updated_at = datetime.utcnow()
+                    item_updated = True
             else:
                 # Media exists - check BIF status for ALL parts using filesystem scan
                 any_missing_bif = False
