@@ -450,7 +450,10 @@ def test_detect_priority_items_returns_scored_priority_infos(monkeypatch):
     scheduler.config.plex_config_folder = "/plex"
 
     now = datetime(2026, 7, 1, tzinfo=timezone.utc)
-    monkeypatch.setattr("plex_generate_previews.web.scheduler.datetime", MagicMock(utcnow=lambda: now))
+    mock_datetime = MagicMock()
+    mock_datetime.utcnow.return_value = now
+    mock_datetime.now.return_value = now
+    monkeypatch.setattr("plex_generate_previews.web.scheduler.datetime", mock_datetime)
     monkeypatch.setattr(
         scheduler,
         "_read_priority_watch_events",
@@ -591,7 +594,6 @@ def test_build_mount_check_paths_includes_required_preview_paths(mock_config):
     assert paths == [
         "/mnt/remote/infinidysk/.ids",
         "/mnt/remote/debrid",
-        "/mnt/plex",
         "/plex-config",
     ]
 

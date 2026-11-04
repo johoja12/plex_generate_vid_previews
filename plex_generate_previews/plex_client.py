@@ -13,7 +13,7 @@ import xml.etree.ElementTree
 import requests
 import urllib3
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -469,16 +469,19 @@ def get_hash_from_database(plex_config_folder: str, file_path: str) -> str:
         return None
 
 def _convert_timestamp_to_datetime(timestamp):
-    """Convert a Unix timestamp (integer) to a datetime object.
+    """Convert a Unix timestamp (integer) to a timezone-aware datetime object.
 
     Handles None values and already-converted datetime objects gracefully.
+    Naive datetimes are assumed to be UTC.
     """
     if timestamp is None:
         return None
     if isinstance(timestamp, datetime):
+        if timestamp.tzinfo is None:
+            return timestamp.replace(tzinfo=timezone.utc)
         return timestamp
     try:
-        return datetime.fromtimestamp(timestamp)
+        return datetime.fromtimestamp(timestamp, tz=timezone.utc)
     except (TypeError, ValueError, OSError):
         return None
 

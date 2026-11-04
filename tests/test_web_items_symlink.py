@@ -1,6 +1,6 @@
 import os
 import pytest
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
@@ -156,8 +156,8 @@ def test_get_items_priority_pagination_uses_total_matching_rows(client, session)
 
 
 def test_get_items_default_order_matches_processing_priority(client, session):
-    newest = datetime(2026, 7, 1, 12, 0, 0)
-    older = datetime(2026, 6, 1, 12, 0, 0)
+    newest = datetime(2026, 7, 1, 12, 0, 0, tzinfo=timezone.utc)
+    older = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
 
     session.add(
         MediaItem(
@@ -207,7 +207,7 @@ def test_get_items_default_order_matches_processing_priority(client, session):
 
 
 def test_get_items_default_order_keeps_processable_items_before_failed(client, session):
-    now = datetime(2026, 7, 1, 12, 0, 0)
+    now = datetime(2026, 7, 1, 12, 0, 0, tzinfo=timezone.utc)
 
     session.add(
         MediaItem(

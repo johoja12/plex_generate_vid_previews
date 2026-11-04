@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from sqlmodel import Field, SQLModel
 from enum import Enum
@@ -52,13 +52,13 @@ class AppSettings(SQLModel, table=True):
     # Data rate limiting
     data_limit_gb_per_hour: float = Field(default=0.0) # 0.0 means no limit
     total_bytes_processed_hour: int = Field(default=0)
-    hour_start_time: datetime = Field(default_factory=datetime.utcnow)
+    hour_start_time: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     rate_limit_exempt_paths: Optional[str] = None  # Comma-separated paths exempt from rate limiting (e.g., "/mnt/remote/nzbdav")
 
     # Sync settings
     use_database_sync: bool = True  # Use direct database queries for sync instead of Plex API (faster)
 
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class MediaItem(SQLModel, table=True):
     id: int = Field(primary_key=True, description="Plex Rating Key")
@@ -66,7 +66,7 @@ class MediaItem(SQLModel, table=True):
     media_type: MediaType
     library_name: str
     original_available_at: Optional[datetime] = None # For sorting by release date
-    added_at: datetime = Field(default_factory=datetime.utcnow) # When added to Plex
+    added_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc)) # When added to Plex
 
     # Processing State
     status: PreviewStatus = Field(default=PreviewStatus.MISSING)
@@ -92,7 +92,7 @@ class MediaItem(SQLModel, table=True):
     error_message: Optional[str] = None # Failure reason for failed items
     last_attempted_at: Optional[datetime] = None # When processing was last attempted
 
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class PreviewCompletion(SQLModel, table=True):
@@ -100,4 +100,4 @@ class PreviewCompletion(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     media_item_id: int = Field(index=True)
     title: str
-    completed_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    completed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), index=True)

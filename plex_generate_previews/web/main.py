@@ -21,7 +21,7 @@ from .database import create_db_and_tables, get_session, engine
 from .models import MediaItem, PreviewStatus, AppSettings
 from .scheduler import scheduler
 from .overview import overview_summary, library_connection_health
-from passlib.context import CryptContext
+import bcrypt
 
 class MediaItemRead(MediaItem):
     is_bundle_hash_missing: bool = False
@@ -48,7 +48,36 @@ def priority_payload(item: MediaItem) -> dict:
 SECRET_KEY = os.environ.get("SECRET_KEY", "change_me_in_production")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin")
 serializer = URLSafeTimedSerializer(SECRET_KEY)
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+def _truncate_bcrypt_password(password: str) -> bytes:
+    """Truncate a password to bcrypt's 72-byte limit, respecting UTF-8 boundaries."""
+    pw_bytes = password.encode("utf-8")
+    if len(pw_bytes) > 72:
+        pw_bytes = pw_bytes[:72]
+        # Back off to a valid UTF-8 boundary if we split a multi-byte character
+        while pw_bytes:
+            try:
+                pw_bytes.decode("utf-8")
+                break
+            except UnicodeDecodeError:
+                pw_bytes = pw_bytes[:-1]
+    return pw_bytes
+
+
+def _hash_password(password: str) -> str:
+    """Hash a password with bcrypt, enforcing the 72-byte limit."""
+    return bcrypt.hashpw(_truncate_bcrypt_password(password), bcrypt.gensalt()).decode("utf-8")
+
+
+def _verify_password(password: str, hashed: str) -> bool:
+    """Verify a password against a bcrypt hash.
+
+    Works with hashes created by passlib too (standard $2b$ format),
+    so existing passwords keep working after this change.
+    """
+    try:
+        return bcrypt.checkpw(_truncate_bcrypt_password(password), hashed.encode("utf-8"))
+    except (ValueError, TypeError):
+        return False
 
 # Plex Constants
 PLEX_API_PINS = "https://plex.tv/api/v2/pins"
@@ -120,14 +149,10 @@ async def login(
     settings = session.get(AppSettings, 1)
     is_valid = False
 
-    # Truncate password to 72 bytes for bcrypt compatibility
-    if len(password.encode('utf-8')) > 72:
-        password_bytes = password.encode('utf-8')[:72]
-        password = password_bytes.decode('utf-8', errors='ignore')
-
     try:
         if settings and settings.admin_password_hash:
-            if pwd_context.verify(password, settings.admin_password_hash):
+            # _verify_password handles bcrypt's 72-byte limit internally
+            if _verify_password(password, settings.admin_password_hash):
                 is_valid = True
         elif password == ADMIN_PASSWORD:
             is_valid = True
@@ -263,18 +288,11 @@ async def update_settings(
     # Update password if provided
     if "new_password" in payload and payload["new_password"]:
         password = payload["new_password"]
-        # Bcrypt has a 72-byte limit - truncate if necessary
-        # Using UTF-8 encoding to properly handle byte length
-        if len(password.encode('utf-8')) > 72:
-            # Truncate at character boundary to avoid breaking multi-byte chars
-            password_bytes = password.encode('utf-8')[:72]
-            # Decode back, ignoring any partial characters at the end
-            password = password_bytes.decode('utf-8', errors='ignore')
-            logger.warning(f"Password was truncated to 72 bytes for bcrypt compatibility")
-
+        # _hash_password enforces bcrypt's 72-byte limit (truncating at a
+        # UTF-8 boundary if needed), so any length password works here.
         try:
-            settings.admin_password_hash = pwd_context.hash(password)
-        except ValueError as e:
+            settings.admin_password_hash = _hash_password(password)
+        except (ValueError, TypeError) as e:
             logger.error(f"Failed to hash password: {e}")
             raise HTTPException(status_code=400, detail=f"Password error: {str(e)}")
         
