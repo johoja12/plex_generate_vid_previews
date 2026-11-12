@@ -274,6 +274,8 @@ class Scheduler:
         self.running = False
         self.thread = None
         self.sync_thread = None
+        self._media_presence_cache = {}
+        self._media_presence_lock = threading.Lock()
         self.worker_pool = None
         self.stop_event = threading.Event()
         self.wake_event = threading.Event()
@@ -1599,13 +1601,20 @@ class Scheduler:
                 recent_partial_rating_keys=self._read_recent_partial_rating_keys(now),
             )
 
-            cached_paths = fully_cached_paths()
+            candidates = None
+
+            def cache_candidates():
+                nonlocal candidates
+                if candidates is None:
+                    with Session(engine) as session:
+                        candidates = session.exec(select(MediaItem).where(
+                            col(MediaItem.id).in_(missing_rating_keys)
+                        )).all()
+                return candidates
+
+            cached_paths = fully_cached_paths(cache_candidates)
             if cached_paths:
-                with Session(engine) as session:
-                    candidates = session.exec(select(MediaItem).where(
-                        col(MediaItem.id).in_(missing_rating_keys)
-                    )).all()
-                for item in candidates:
+                for item in cache_candidates():
                     cached_versions = cached_part_paths(item, cached_paths, missing_only=True)
                     if cached_versions:
                         info = priority_infos.setdefault(item.id, PriorityInfo())
@@ -2095,6 +2104,52 @@ class Scheduler:
 
         return priority_keys
 
+    def _sync_media_path_exists(self, path, *, fresh=False):
+        """Cache successful target checks, while rechecking the library entry.
+
+        New/changed items and MEDIA_MISSING items bypass this cache. Failed
+        lookups are never cached, so restored media is visible on the next sync.
+        Workers still validate the actual target before processing.
+        """
+        ttl = max(0, int(os.environ.get("MEDIA_AVAILABILITY_CACHE_SECONDS", "86400")))
+        now = time.monotonic()
+        with self._media_presence_lock:
+            cached = self._media_presence_cache.get(path)
+        if not fresh and ttl and cached and now - cached[0] < ttl:
+            try:
+                entry = os.lstat(path)
+                signature = (entry.st_dev, entry.st_ino, entry.st_size,
+                             entry.st_mtime_ns, entry.st_ctime_ns)
+                if signature == cached[1]:
+                    return True
+            except OSError:
+                pass
+        before = None
+        if ttl:
+            try:
+                before = os.lstat(path)
+            except OSError:
+                pass
+        exists = os.path.exists(path)
+        signature = None
+        if exists and ttl and before is not None:
+            try:
+                entry = os.lstat(path)
+                signature = (entry.st_dev, entry.st_ino, entry.st_size,
+                             entry.st_mtime_ns, entry.st_ctime_ns)
+                before_signature = (before.st_dev, before.st_ino, before.st_size,
+                                    before.st_mtime_ns, before.st_ctime_ns)
+                if signature != before_signature:
+                    signature = None
+            except OSError:
+                pass
+        with self._media_presence_lock:
+            if signature is not None:
+                self._media_presence_cache[path] = (now, signature)
+            else:
+                self._media_presence_cache.pop(path, None)
+        return exists
+
     def _process_sync_item(self, section_title, item_key, title, item_type, bundle_hash, added_at,
                           media_parts, bundle_hash_map, priority_item_keys, db_item):
         """
@@ -2128,11 +2183,17 @@ class Scheduler:
                 if bh  # Skip parts with no bundle hash
             )
 
-        # Check if media files exist (detect broken symlinks)
+        # Force target checks for new/changed items and previously missing media.
+        fresh_media_check = (
+            db_item is None
+            or db_item.status == PreviewStatus.MEDIA_MISSING
+            or db_item.bundle_hash != bundle_hash
+            or db_item.media_parts_info != media_parts_json
+        )
         media_exists = False
         if media_parts:
             for file_path, _ in media_parts:
-                if file_path and os.path.exists(file_path):
+                if file_path and self._sync_media_path_exists(file_path, fresh=fresh_media_check):
                     media_exists = True
                     break
 
@@ -2441,6 +2502,12 @@ class Scheduler:
                 settings_session.commit()
                 new_last_sync_time = settings.last_sync_time # Extract value while session is open
             self.last_sync_time = new_last_sync_time # Assign after session is closed
+            current_paths = {path for parts in media_parts_map.values() for path, _ in parts if path}
+            with self._media_presence_lock:
+                self._media_presence_cache = {
+                    path: cached for path, cached in self._media_presence_cache.items()
+                    if path in current_paths
+                }
 
             total_sync_time = time.time() - sync_start_time
             logger.info(f"Library sync complete in {total_sync_time:.2f}s. {sync_stats}")

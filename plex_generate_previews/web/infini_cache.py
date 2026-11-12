@@ -4,18 +4,27 @@ import json
 import os
 import re
 from uuid import UUID
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 from loguru import logger
 
 
-def fully_cached_paths() -> set[str]:
+def fully_cached_paths(candidate_items=None) -> set[str]:
     url = os.environ.get("INFINIDYSK_URL", "").rstrip("/")
     key = os.environ.get("INFINIDYSK_API_KEY", "")
     if not url or not key:
         return set()
 
     try:
+        version = os.environ.get("INFINIDYSK_API_VERSION", "1")
+        if version in {"2", "v2"}:
+            from .infini_v2 import fully_cached_paths_v2, candidate_ids
+            items = candidate_items() if callable(candidate_items) else candidate_items
+            ids = candidate_ids(items) if items is not None else None
+            return fully_cached_paths_v2(url, key, ids)
+        if version not in {"1", "v1"}:
+            raise ValueError("Unsupported InfiniDysk API version")
         with requests.Session() as client:
             client.headers["x-api-key"] = key
 
@@ -48,23 +57,45 @@ def fully_cached_paths() -> set[str]:
                         raise ValueError("Repeated cache cursor")
                     seen.add(after)
 
-            paths = set()
             mount = os.environ.get("INFINIDYSK_MOUNT_PATH", "/mnt/remote/infinidysk").rstrip("/")
             library = os.environ.get("INFINIDYSK_LIBRARY_PATH", "/mnt/plex")
-            for item_id, length in complete.items():
-                details = get("/api/get-library-file-details", allow_missing=True, davItemId=item_id)
-                if not details or details.get("size") != length:
-                    continue
-                paths.add(mount + "/.ids/" + item_id)
-                content = details.get("contentPath")
-                if content:
-                    paths.add(mount + "/" + content.lstrip("/"))
-                for mapping in details.get("mappings", []):
-                    if mapping.get("status") == "valid" and mapping.get("linkPath"):
-                        link = mapping["linkPath"]
-                        paths.add(link if os.path.isabs(link) else os.path.normpath(os.path.join(library, link)))
-            return paths
-    except (requests.RequestException, ValueError, KeyError, TypeError):
+
+            def resolve_batch(entries):
+                # Each worker owns its HTTP session; never share mutable session
+                # state between threads. Bound concurrency to protect InfiniDysk.
+                paths = set()
+                with requests.Session() as details_client:
+                    details_client.headers["x-api-key"] = key
+                    for item_id, length in entries:
+                        response = details_client.get(
+                            url + "/api/get-library-file-details",
+                            params={"davItemId": item_id}, timeout=(5, 15))
+                        if response.status_code == 404:
+                            continue
+                        response.raise_for_status()
+                        details = response.json()
+                        if not details or details.get("size") != length:
+                            continue
+                        paths.add(mount + "/.ids/" + item_id)
+                        content = details.get("contentPath")
+                        if content:
+                            paths.add(mount + "/" + content.lstrip("/"))
+                        for mapping in details.get("mappings", []):
+                            if mapping.get("status") == "valid" and mapping.get("linkPath"):
+                                link = mapping["linkPath"]
+                                paths.add(link if os.path.isabs(link) else os.path.normpath(os.path.join(library, link)))
+                return paths
+
+            entries = list(complete.items())
+            if len(entries) <= 8:
+                return resolve_batch(entries)
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                batches = [entries[index::8] for index in range(8)]
+                # Build the result only after every batch succeeds. A failed
+                # request must not make a partial cache catalogue eligible.
+                results = list(executor.map(resolve_batch, batches))
+            return set().union(*results)
+    except (requests.RequestException, ValueError, KeyError, TypeError, AttributeError):
         # Do not include URL, headers or response text: they may contain credentials.
         logger.warning("InfiniDysk verified cache catalogue unavailable; skipping cached-only eligibility")
         return set()
