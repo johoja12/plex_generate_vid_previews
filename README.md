@@ -687,6 +687,13 @@ with viewer, device, playback state, and playback progress.
 To enable InfiniDysk cache eligibility, set `INFINIDYSK_URL` (for this lab,
 `http://192.168.20.65:8080`) and `INFINIDYSK_API_KEY` in the web container's
 environment. `INFINIDYSK_MOUNT_PATH` defaults to `/mnt/remote/infinidysk`.
+For the Rust v2 service, also set `INFINIDYSK_API_VERSION=2` and use the
+admin API key (`auth.api_key`), which can differ from the SAB download-client key.
+The v2 adapter checks current-source coverage through `/api/v1/files/{id}`;
+cache inventory sizes alone never qualify an item. Unavailable storage, recovery
+mode, coverage warnings and incomplete ranges exclude cached-only eligibility.
+The default API version remains v1 for existing deployments.
+
 `INFINIDYSK_LIBRARY_PATH` defaults to `/mnt/plex` and resolves relative library
 link mappings returned by InfiniDysk. Flat and sharded `.ids` links are supported;
 deleted cache entries returning HTTP 404 are skipped individually.

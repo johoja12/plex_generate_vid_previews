@@ -46,6 +46,11 @@ RUN if [ -n "$SETUPTOOLS_SCM_PRETEND_VERSION" ]; then \
       pip3 install . --no-cache-dir; \
     fi
 
+# Verify the package resolved by the installed web console entry point. Checking
+# imports from /app alone can hide an outdated copy in dist-packages.
+COPY scripts/verify_runtime_package.py /app/scripts/verify_runtime_package.py
+RUN python3 /app/scripts/verify_runtime_package.py
+
 # Copy wrapper script
 COPY wrapper.sh /app/wrapper.sh
 RUN chmod +x /app/wrapper.sh

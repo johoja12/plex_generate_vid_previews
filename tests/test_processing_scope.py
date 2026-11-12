@@ -147,7 +147,7 @@ def test_detection_combines_playback_and_cache_with_existing_sources(db, monkeyp
     monkeypatch.setattr(scheduler, "_collect_priority_hub_items", lambda plex: {})
     monkeypatch.setattr(scheduler, "_collect_on_deck_rating_keys", lambda plex: {3})
     monkeypatch.setattr(scheduler, "_collect_active_playback_rating_keys", lambda plex: {1, 99})
-    monkeypatch.setattr(scheduler_module, "fully_cached_paths", lambda: {"/cached"})
+    monkeypatch.setattr(scheduler_module, "fully_cached_paths", lambda candidates=None: {"/cached"})
     result = scheduler.detect_priority_items(MagicMock(), {1, 2, 3})
     assert set(result) == {1, 2, 3}
     assert result[1].score > result[3].score > result[2].score
