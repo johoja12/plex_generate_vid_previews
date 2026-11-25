@@ -291,7 +291,7 @@ function renderOverview() {
           `<div class="source"><div class="source-line"><span>${esc(sourceLabel(source))}</span><strong>${count}</strong></div><div class="source-bar"><i style="width:${(count / highest) * 100}%"></i></div></div>`,
       )
       .join("") +
-    '<div class="source-note">Items may have multiple origins.<br>TV hubs select 20 entries, with up to 3 episodes per show or season.</div>';
+    '<div class="source-note">Items may have multiple origins.<br>TV hubs select 20 entries and share a limit of 3 episodes per show in 24 hours.</div>';
   $("activity").innerHTML = data.recent_completed.length
     ? data.recent_completed
         .slice(0, 5)

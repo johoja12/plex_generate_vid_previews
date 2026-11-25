@@ -19,6 +19,7 @@ from ..utils import setup_working_directory, sanitize_path
 from .database import engine, get_session
 from .models import MediaItem, PreviewStatus, MediaType, AppSettings
 from .overview import record_completion
+from .hub_daily_limit import limit_hub_episodes
 from .infini_cache import fully_cached_paths, item_is_fully_cached, cached_part_paths
 from .resume_priority import ResumeStateError, recent_partial_rating_keys
 from .priority import (
@@ -1591,15 +1592,17 @@ class Scheduler:
 
             episodes = self._read_priority_episode_rows()
             now = datetime.utcnow().replace(tzinfo=timezone.utc)
+            hub_items = self._collect_priority_hub_items(plex)
             priority_infos = build_priority_infos(
                 watch_events=self._read_priority_watch_events(history_limit),
                 episodes=episodes,
                 missing_rating_keys=missing_rating_keys,
                 now=now,
-                hub_items_by_title=self._collect_priority_hub_items(plex),
+                hub_items_by_title=hub_items,
                 on_deck_rating_keys=self._collect_on_deck_rating_keys(plex),
                 recent_partial_rating_keys=self._read_recent_partial_rating_keys(now),
             )
+            limit_hub_episodes(engine, priority_infos, episodes, hub_items, now)
 
             candidates = None
 
